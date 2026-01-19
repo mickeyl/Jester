@@ -712,32 +712,32 @@ function App() {
         )}
       </div>
 
-      {/* Tabs */}
-      <div className="tabs">
-        <button
-          className={`tab ${activeTab === "messages" ? "active" : ""}`}
-          onClick={() => setActiveTab("messages")}
-        >
-          Messages
-        </button>
-        <button
-          className={`tab ${activeTab === "device-info" ? "active" : ""}`}
-          onClick={() => setActiveTab("device-info")}
-          disabled={!status.connected}
-        >
-          Device Info
-        </button>
-        <button
-          className={`tab ${activeTab === "api-test" ? "active" : ""}`}
-          onClick={() => setActiveTab("api-test")}
-          disabled={!status.connected}
-        >
-          API Testing
-        </button>
-      </div>
+      {/* Tabs - only show when connected */}
+      {status.connected && (
+        <>
+          <div className="tabs">
+            <button
+              className={`tab ${activeTab === "messages" ? "active" : ""}`}
+              onClick={() => setActiveTab("messages")}
+            >
+              Messages
+            </button>
+            <button
+              className={`tab ${activeTab === "device-info" ? "active" : ""}`}
+              onClick={() => setActiveTab("device-info")}
+            >
+              Device Info
+            </button>
+            <button
+              className={`tab ${activeTab === "api-test" ? "active" : ""}`}
+              onClick={() => setActiveTab("api-test")}
+            >
+              API Testing
+            </button>
+          </div>
 
-      {/* Messages Tab */}
-      {activeTab === "messages" && (
+          {/* Messages Tab */}
+          {activeTab === "messages" && (
         <>
           {/* Message Send Panel */}
           <div className="message-panel">
@@ -853,7 +853,7 @@ function App() {
       )}
 
       {/* Device Info Tab */}
-      {activeTab === "device-info" && status.connected && (
+      {activeTab === "device-info" && (
         <div className="device-info-panel">
           <h2>Device Information</h2>
 
@@ -921,7 +921,7 @@ function App() {
       )}
 
       {/* API Testing Tab */}
-      {activeTab === "api-test" && status.connected && (
+      {activeTab === "api-test" && (
         <div className="api-test-panel">
           <div className="api-test-grid">
             {/* Left column: Test controls */}
@@ -1158,6 +1158,8 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
 
       {/* Progress Dialog */}
