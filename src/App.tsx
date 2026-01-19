@@ -17,7 +17,8 @@ import type {
   ActivePeriodicMessage,
   ActiveFilter,
 } from "./types";
-import { J2534ConfigParams, J2534ConfigParamNames } from "./types";
+import { J2534ConfigParams, J2534ConfigParamNames, J2534Protocols } from "./types";
+import type { J2534Protocol } from "./types";
 
 interface LogEntry {
   id: number;
@@ -71,7 +72,10 @@ function App() {
   const [selectedDevice, setSelectedDevice] = useState("");
 
   // Connection config
+  // Note: Only CAN protocol is supported. Other J2534 protocols (ISO15765, ISO9141, etc.)
+  // are optional in the spec, so adapter support is inconsistent and unreliable.
   const [baudRate, setBaudRate] = useState(500000);
+  const [protocol] = useState<J2534Protocol>("CAN");
   const [useExtendedId, setUseExtendedId] = useState(false);
 
   // Connection state
@@ -329,7 +333,7 @@ function App() {
       const config: J2534Config = {
         deviceName: selectedDevice,
         baudRate,
-        protocol: "CAN",
+        protocol,
         useExtendedId,
       };
 
@@ -341,7 +345,7 @@ function App() {
       setError(String(err));
       setShowProgress(false);
     }
-  }, [selectedDevice, baudRate, useExtendedId]);
+  }, [selectedDevice, baudRate, protocol, useExtendedId]);
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -694,6 +698,7 @@ function App() {
             />
             {status.connected ? "Connected" : "Disconnected"}
           </div>
+
         </div>
 
         {status.connected && (
@@ -756,6 +761,11 @@ function App() {
                   type="text"
                   value={txArbId}
                   onChange={(e) => setTxArbId(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && status.connected) {
+                      handleSendMessage();
+                    }
+                  }}
                   placeholder="7E0"
                   disabled={!status.connected}
                   style={{ width: "100px" }}
@@ -768,6 +778,11 @@ function App() {
                   type="text"
                   value={txData}
                   onChange={(e) => setTxData(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && status.connected) {
+                      handleSendMessage();
+                    }
+                  }}
                   placeholder="01 00"
                   disabled={!status.connected}
                   style={{ width: "250px" }}

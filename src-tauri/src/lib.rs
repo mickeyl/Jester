@@ -213,10 +213,14 @@ async fn j2534_connect(
         let baud_rate = config.baud_rate;
         let use_extended_id = config.use_extended_id;
 
+        // Note: Only CAN protocol (ID 5) is supported. Other J2534 protocols like ISO15765
+        // are optional in the spec, so adapter support is inconsistent and unreliable.
+        let protocol_id = 5; // PROTOCOL_CAN
+
         // Create a channel for progress updates
         let app_handle = app.clone();
 
-        let connection = UnifiedConnection::open(&dll_path, baud_rate, use_extended_id, move |progress| {
+        let connection = UnifiedConnection::open(&dll_path, protocol_id, baud_rate, use_extended_id, move |progress| {
             let _ = app_handle.emit("j2534-progress", progress);
         })?;
 

@@ -192,6 +192,7 @@ fn handle_request(
 
         Request::Open {
             dll_path,
+            protocol_id,
             baud_rate,
             use_extended_id,
         } => {
@@ -200,7 +201,7 @@ fn handle_request(
                 return Response::error(-1, "Already connected");
             }
 
-            match j2534::J2534Connection::open(dll_path, *baud_rate, *use_extended_id, |_| {}) {
+            match j2534::J2534Connection::open(dll_path, *protocol_id, *baud_rate, *use_extended_id, |_| {}) {
                 Ok(conn) => {
                     *conn_guard = Some(conn);
                     Response::ok(ResponseData::Connected)

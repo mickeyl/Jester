@@ -18,6 +18,7 @@ pub enum Request {
     EnumerateDevices,
     Open {
         dll_path: String,
+        protocol_id: u32,
         baud_rate: u32,
         use_extended_id: bool,
     },
@@ -142,6 +143,7 @@ pub struct BridgeClient {
     writer: Option<std::fs::File>,
     reader: Option<BufReader<std::fs::File>>,
     next_id: AtomicU64,
+    #[allow(dead_code)]
     pending_responses: Mutex<std::collections::HashMap<u64, Response>>,
 }
 
@@ -336,6 +338,7 @@ impl BridgeClient {
     }
 
     /// Check if the bridge is running
+    #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         self.process.is_some() && self.writer.is_some()
     }

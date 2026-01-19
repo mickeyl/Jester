@@ -55,6 +55,7 @@ impl UnifiedConnection {
     /// Open a connection to a device (always via bridge for fault isolation)
     pub fn open<F>(
         dll_path: &str,
+        protocol_id: u32,
         baud_rate: u32,
         use_extended_id: bool,
         progress_callback: F,
@@ -82,6 +83,7 @@ impl UnifiedConnection {
 
         let response = bridge.send_request(Request::Open {
             dll_path: dll_path.to_string(),
+            protocol_id,
             baud_rate,
             use_extended_id,
         })?;

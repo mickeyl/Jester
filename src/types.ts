@@ -12,9 +12,16 @@ export interface J2534Device {
 export interface J2534Config {
   deviceName: string;
   baudRate: number;
-  protocol: string;
+  protocol: J2534Protocol;
   useExtendedId: boolean;
 }
+
+// J2534 Protocol ID (only CAN supported for now)
+export type J2534Protocol = "CAN";
+
+export const J2534Protocols: Record<J2534Protocol, { id: number; name: string; description: string }> = {
+  CAN: { id: 5, name: "CAN", description: "Raw CAN frames (up to 8 bytes)" },
+};
 
 export interface CANMessage {
   timestampUs: number;

@@ -7,79 +7,140 @@ use winreg::enums::*;
 use winreg::RegKey;
 
 // J2534 Protocol IDs
+// Note: Only CAN protocol is supported. Other protocols (ISO15765, ISO9141, etc.)
+// are optional in the J2534 spec, so adapter support is inconsistent.
+#[allow(dead_code)]
 pub const PROTOCOL_J1850VPW: u32 = 1;
+#[allow(dead_code)]
 pub const PROTOCOL_J1850PWM: u32 = 2;
+#[allow(dead_code)]
 pub const PROTOCOL_ISO9141: u32 = 3;
+#[allow(dead_code)]
 pub const PROTOCOL_ISO14230: u32 = 4;
 pub const PROTOCOL_CAN: u32 = 5;
+#[allow(dead_code)]
 pub const PROTOCOL_ISO15765: u32 = 6;
+#[allow(dead_code)]
 pub const PROTOCOL_SCI_A_ENGINE: u32 = 7;
+#[allow(dead_code)]
 pub const PROTOCOL_SCI_A_TRANS: u32 = 8;
+#[allow(dead_code)]
 pub const PROTOCOL_SCI_B_ENGINE: u32 = 9;
+#[allow(dead_code)]
 pub const PROTOCOL_SCI_B_TRANS: u32 = 10;
 
 // J2534 Connect Flags
 pub const CAN_29BIT_ID: u32 = 0x100;
+#[allow(dead_code)]
 pub const ISO9141_NO_CHECKSUM: u32 = 0x200;
+#[allow(dead_code)]
 pub const CAN_ID_BOTH: u32 = 0x800;
+#[allow(dead_code)]
 pub const ISO9141_K_LINE_ONLY: u32 = 0x1000;
+
+// J2534 TxFlags
+#[allow(dead_code)]
+pub const ISO15765_FRAME_PAD: u32 = 0x0040;
+#[allow(dead_code)]
+pub const ISO15765_ADDR_TYPE: u32 = 0x0080;
 
 // J2534 Filter Types
 pub const PASS_FILTER: u32 = 1;
+#[allow(dead_code)]
 pub const BLOCK_FILTER: u32 = 2;
+#[allow(dead_code)]
 pub const FLOW_CONTROL_FILTER: u32 = 3;
 
 // J2534 IOCTL IDs
 pub const GET_CONFIG: u32 = 0x01;
 pub const SET_CONFIG: u32 = 0x02;
 pub const READ_VBATT: u32 = 0x03;
+#[allow(dead_code)]
 pub const FIVE_BAUD_INIT: u32 = 0x04;
+#[allow(dead_code)]
 pub const FAST_INIT: u32 = 0x05;
 pub const CLEAR_TX_BUFFER: u32 = 0x07;
 pub const CLEAR_RX_BUFFER: u32 = 0x08;
 pub const CLEAR_PERIODIC_MSGS: u32 = 0x09;
 pub const CLEAR_MSG_FILTERS: u32 = 0x0A;
+#[allow(dead_code)]
 pub const CLEAR_FUNCT_MSG_LOOKUP_TABLE: u32 = 0x0B;
+#[allow(dead_code)]
 pub const ADD_TO_FUNCT_MSG_LOOKUP_TABLE: u32 = 0x0C;
+#[allow(dead_code)]
 pub const DELETE_FROM_FUNCT_MSG_LOOKUP_TABLE: u32 = 0x0D;
 pub const READ_PROG_VOLTAGE: u32 = 0x0E;
 
 // J2534 Config Parameter IDs
 pub const DATA_RATE: u32 = 0x01;
 pub const LOOPBACK: u32 = 0x03;
+#[allow(dead_code)]
 pub const NODE_ADDRESS: u32 = 0x04;
+#[allow(dead_code)]
 pub const NETWORK_LINE: u32 = 0x05;
+#[allow(dead_code)]
 pub const P1_MIN: u32 = 0x06;
+#[allow(dead_code)]
 pub const P1_MAX: u32 = 0x07;
+#[allow(dead_code)]
 pub const P2_MIN: u32 = 0x08;
+#[allow(dead_code)]
 pub const P2_MAX: u32 = 0x09;
+#[allow(dead_code)]
 pub const P3_MIN: u32 = 0x0A;
+#[allow(dead_code)]
 pub const P3_MAX: u32 = 0x0B;
+#[allow(dead_code)]
 pub const P4_MIN: u32 = 0x0C;
+#[allow(dead_code)]
 pub const P4_MAX: u32 = 0x0D;
+#[allow(dead_code)]
 pub const W1: u32 = 0x0E;
+#[allow(dead_code)]
 pub const W2: u32 = 0x0F;
+#[allow(dead_code)]
 pub const W3: u32 = 0x10;
+#[allow(dead_code)]
 pub const W4: u32 = 0x11;
+#[allow(dead_code)]
 pub const W5: u32 = 0x12;
+#[allow(dead_code)]
 pub const TIDLE: u32 = 0x13;
+#[allow(dead_code)]
 pub const TINIL: u32 = 0x14;
+#[allow(dead_code)]
 pub const TWUP: u32 = 0x15;
+#[allow(dead_code)]
 pub const PARITY: u32 = 0x16;
+#[allow(dead_code)]
 pub const BIT_SAMPLE_POINT: u32 = 0x17;
+#[allow(dead_code)]
 pub const SYNC_JUMP_WIDTH: u32 = 0x18;
+#[allow(dead_code)]
 pub const W0: u32 = 0x19;
+#[allow(dead_code)]
 pub const T1_MAX: u32 = 0x1A;
+#[allow(dead_code)]
 pub const T2_MAX: u32 = 0x1B;
+#[allow(dead_code)]
 pub const T4_MAX: u32 = 0x1C;
+#[allow(dead_code)]
 pub const T5_MAX: u32 = 0x1D;
+#[allow(dead_code)]
 pub const ISO15765_BS: u32 = 0x1E;
+#[allow(dead_code)]
 pub const ISO15765_STMIN: u32 = 0x1F;
+#[allow(dead_code)]
 pub const DATA_BITS: u32 = 0x20;
+#[allow(dead_code)]
 pub const FIVE_BAUD_MOD: u32 = 0x21;
+#[allow(dead_code)]
 pub const BS_TX: u32 = 0x22;
+#[allow(dead_code)]
 pub const STMIN_TX: u32 = 0x23;
+#[allow(dead_code)]
 pub const T3_MAX: u32 = 0x24;
+#[allow(dead_code)]
 pub const ISO15765_WFT_MAX: u32 = 0x25;
 
 // J2534 Error codes
@@ -150,6 +211,7 @@ pub fn error_code_to_string(code: i32) -> &'static str {
 }
 
 /// Get protocol name from ID
+#[allow(dead_code)]
 pub fn protocol_id_to_string(id: u32) -> &'static str {
     match id {
         PROTOCOL_J1850VPW => "J1850VPW",
@@ -203,6 +265,7 @@ pub struct J2534Device {
     pub compatible: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct J2534Config {
@@ -247,6 +310,7 @@ pub struct J2534VersionInfo {
     pub api_version: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct J2534VoltageInfo {
@@ -254,6 +318,7 @@ pub struct J2534VoltageInfo {
     pub programming_voltage: f64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct J2534TestResult {
@@ -265,6 +330,7 @@ pub struct J2534TestResult {
     pub duration_ms: u64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct J2534PeriodicMsg {
@@ -274,6 +340,7 @@ pub struct J2534PeriodicMsg {
     pub interval_ms: u32,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct J2534FilterInfo {
@@ -458,6 +525,7 @@ type PassThruStopPeriodicMsgFn = unsafe extern "system" fn(c_ulong, c_ulong) -> 
 type PassThruIoctlFn = unsafe extern "system" fn(c_ulong, c_ulong, *mut c_void, *mut c_void) -> i32;
 type PassThruReadVersionFn = unsafe extern "system" fn(c_ulong, *mut c_char, *mut c_char, *mut c_char) -> i32;
 type PassThruGetLastErrorFn = unsafe extern "system" fn(*mut c_char) -> i32;
+#[allow(dead_code)]
 type PassThruSetProgrammingVoltageFn = unsafe extern "system" fn(c_ulong, c_ulong, c_ulong) -> i32;
 
 /// Tracks a recently sent message for TX echo filtering
@@ -472,12 +540,13 @@ pub struct J2534Connection {
     library: Library,
     device_id: u32,
     channel_id: u32,
+    protocol_id: u32,
     /// Recently sent messages for filtering TX echoes (driver workaround)
     sent_messages: std::sync::Mutex<Vec<SentMessage>>,
 }
 
 impl J2534Connection {
-    pub fn open(dll_path: &str, baud_rate: u32, use_extended_id: bool, progress_callback: impl Fn(J2534Progress)) -> Result<Self, String> {
+    pub fn open(dll_path: &str, protocol_id: u32, baud_rate: u32, use_extended_id: bool, progress_callback: impl Fn(J2534Progress)) -> Result<Self, String> {
         // Load the DLL
         progress_callback(J2534Progress {
             step: "load_dll".to_string(),
@@ -534,7 +603,7 @@ impl J2534Connection {
                 .get(b"PassThruConnect\0")
                 .map_err(|e| format!("ERR_J2534_FUNC_NOT_FOUND: PassThruConnect - {}", e))?;
 
-            let result = connect_fn(device_id, PROTOCOL_CAN as c_ulong, flags as c_ulong, baud_rate as c_ulong, &mut channel_id);
+            let result = connect_fn(device_id, protocol_id as c_ulong, flags as c_ulong, baud_rate as c_ulong, &mut channel_id);
             if result != STATUS_NOERROR {
                 // Clean up device on failure
                 if let Ok(close_fn) = library.get::<PassThruCloseFn>(b"PassThruClose\0") {
@@ -563,12 +632,12 @@ impl J2534Connection {
                 .map_err(|e| format!("ERR_J2534_FUNC_NOT_FOUND: PassThruStartMsgFilter - {}", e))?;
 
             let mut mask_msg = PassThruMsg::default();
-            mask_msg.protocol_id = PROTOCOL_CAN;
+            mask_msg.protocol_id = protocol_id;
             mask_msg.data_size = 4;
             // All zeros = match everything
 
             let mut pattern_msg = PassThruMsg::default();
-            pattern_msg.protocol_id = PROTOCOL_CAN;
+            pattern_msg.protocol_id = protocol_id;
             pattern_msg.data_size = 4;
             // All zeros = match everything
 
@@ -597,6 +666,7 @@ impl J2534Connection {
             library,
             device_id,
             channel_id,
+            protocol_id,
             sent_messages: std::sync::Mutex::new(Vec::new()),
         };
 
@@ -632,7 +702,7 @@ impl J2534Connection {
 
     pub fn send_message(&self, arb_id: u32, data: &[u8], extended: bool) -> Result<(), String> {
         let mut msg = PassThruMsg::default();
-        msg.protocol_id = PROTOCOL_CAN;
+        msg.protocol_id = self.protocol_id;
         msg.tx_flags = if extended { CAN_29BIT_ID } else { 0 };
 
         // First 4 bytes are the CAN ID
@@ -641,7 +711,7 @@ impl J2534Connection {
         msg.data[2] = ((arb_id >> 8) & 0xFF) as u8;
         msg.data[3] = (arb_id & 0xFF) as u8;
 
-        // Copy data bytes
+        // Copy data bytes (CAN limited to 8 bytes)
         let data_len = data.len().min(8);
         msg.data[4..4 + data_len].copy_from_slice(&data[..data_len]);
         msg.data_size = (4 + data_len) as u32;
@@ -884,7 +954,7 @@ impl J2534Connection {
     /// Start a periodic message
     pub fn start_periodic_message(&self, arb_id: u32, data: &[u8], interval_ms: u32, extended: bool) -> Result<u32, String> {
         let mut msg = PassThruMsg::default();
-        msg.protocol_id = PROTOCOL_CAN;
+        msg.protocol_id = self.protocol_id;
         msg.tx_flags = if extended { CAN_29BIT_ID } else { 0 };
 
         // First 4 bytes are the CAN ID
@@ -893,6 +963,7 @@ impl J2534Connection {
         msg.data[2] = ((arb_id >> 8) & 0xFF) as u8;
         msg.data[3] = (arb_id & 0xFF) as u8;
 
+        // Copy data bytes (CAN limited to 8 bytes)
         let data_len = data.len().min(8);
         msg.data[4..4 + data_len].copy_from_slice(&data[..data_len]);
         msg.data_size = (4 + data_len) as u32;
@@ -948,14 +1019,14 @@ impl J2534Connection {
     /// Add a message filter and return the filter ID
     pub fn add_filter(&self, filter_type: u32, mask: &[u8], pattern: &[u8], extended: bool) -> Result<u32, String> {
         let mut mask_msg = PassThruMsg::default();
-        mask_msg.protocol_id = PROTOCOL_CAN;
+        mask_msg.protocol_id = self.protocol_id;
         mask_msg.tx_flags = if extended { CAN_29BIT_ID } else { 0 };
         let mask_len = mask.len().min(4);
         mask_msg.data[..mask_len].copy_from_slice(&mask[..mask_len]);
         mask_msg.data_size = 4;
 
         let mut pattern_msg = PassThruMsg::default();
-        pattern_msg.protocol_id = PROTOCOL_CAN;
+        pattern_msg.protocol_id = self.protocol_id;
         pattern_msg.tx_flags = if extended { CAN_29BIT_ID } else { 0 };
         let pattern_len = pattern.len().min(4);
         pattern_msg.data[..pattern_len].copy_from_slice(&pattern[..pattern_len]);

@@ -15,6 +15,7 @@ pub enum Request {
     /// Open a connection to a device
     Open {
         dll_path: String,
+        protocol_id: u32,
         baud_rate: u32,
         use_extended_id: bool,
     },
@@ -172,6 +173,7 @@ pub struct VersionInfo {
 }
 
 /// Progress update (sent asynchronously during connection)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressUpdate {
