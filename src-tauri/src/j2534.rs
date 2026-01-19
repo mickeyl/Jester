@@ -691,7 +691,9 @@ impl J2534Connection {
 
             let result = read_fn(self.channel_id, msg_buffer.as_mut_ptr(), &mut num_msgs, timeout_ms);
 
-            if result != STATUS_NOERROR && result != ERR_BUFFER_EMPTY {
+            // Allow STATUS_NOERROR, ERR_BUFFER_EMPTY, and ERR_TIMEOUT
+            // ERR_TIMEOUT can still return messages (e.g., ScanDoc WiFi adapter)
+            if result != STATUS_NOERROR && result != ERR_BUFFER_EMPTY && result != ERR_TIMEOUT {
                 return Err(format!("ERR_J2534_READ_FAILED: error code {}", result));
             }
         }
