@@ -1220,15 +1220,14 @@ function App() {
                 Jester is a diagnostic tool for testing and validating J2534 PassThru
                 devices and their DLL implementations.
               </p>
-              <h4>Features</h4>
+              <h4>Key Features</h4>
               <ul>
-                <li>Connect to any J2534-compliant PassThru device</li>
+                <li><strong>Fault-Isolated Architecture</strong> &ndash; DLLs run in a separate process; crashes won't bring down the app</li>
+                <li><strong>Cross-Bitness Support</strong> &ndash; 64-bit app loads 32-bit DLLs seamlessly (and vice versa)</li>
                 <li>Send and receive CAN messages in real-time</li>
-                <li>Monitor message traffic with detailed logging</li>
-                <li>Test periodic messages and message filters</li>
+                <li>Test periodic messages, filters, and configuration parameters</li>
                 <li>Read device information and voltage levels</li>
-                <li>Configure protocol parameters (baud rate, loopback, etc.)</li>
-                <li>Supports both standard (11-bit) and extended (29-bit) CAN IDs</li>
+                <li>Supports standard (11-bit) and extended (29-bit) CAN IDs</li>
               </ul>
               <p className="about-note">
                 Designed for automotive engineers, ECU developers, and anyone working

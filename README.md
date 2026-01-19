@@ -8,6 +8,8 @@ Jester is a diagnostic tool for testing and validating J2534 PassThru devices an
 
 ## Features
 
+- **Fault-Isolated Architecture** - All J2534 DLLs run in a separate bridge process. If a buggy DLL crashes, your app keeps running
+- **Cross-Bitness Support** - 64-bit Jester can load 32-bit DLLs (and vice versa) seamlessly via the bridge
 - Connect to any J2534-compliant PassThru device
 - Send and receive CAN messages in real-time
 - Monitor message traffic with detailed logging
@@ -38,13 +40,19 @@ Download the latest release from the [Releases](https://github.com/mickeyl/Jeste
 
 ```bash
 # Install dependencies
-npm install
+make install
 
-# Run in development mode
-npm run tauri dev
+# Setup Rust targets (first time only)
+make setup-targets
+
+# Run in development mode (64-bit)
+make dev64
+
+# Run in development mode (32-bit)
+make dev32
 
 # Build for production
-npm run tauri build
+make build64   # or make build32
 ```
 
 ## Usage
