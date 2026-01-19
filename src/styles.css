@@ -1022,3 +1022,121 @@ button.small {
 .log-entry.info {
   color: var(--accent-muted);
 }
+
+/* Panel header with about button */
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.panel-header h2 {
+  margin-bottom: 0;
+}
+
+.about-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.about-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+/* About Dialog */
+.about-dialog {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 0;
+  width: 480px;
+  max-width: 90vw;
+  border: 1px solid var(--border-primary);
+  overflow: hidden;
+}
+
+.about-header {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+  padding: 32px 24px;
+  text-align: center;
+}
+
+.about-header h1 {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+  color: white;
+  letter-spacing: -0.02em;
+}
+
+.about-subtitle {
+  margin: 8px 0 0 0;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 500;
+}
+
+.about-content {
+  padding: 24px;
+}
+
+.about-content p {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.about-content h4 {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.about-content ul {
+  margin: 0 0 16px 0;
+  padding-left: 20px;
+}
+
+.about-content li {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.about-content li::marker {
+  color: var(--accent);
+}
+
+.about-note {
+  font-size: 13px !important;
+  color: var(--text-muted) !important;
+  font-style: italic;
+  margin-bottom: 0 !important;
+}
+
+.about-footer {
+  padding: 16px 24px;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-primary);
+  display: flex;
+  justify-content: flex-end;
+}

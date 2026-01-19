@@ -86,10 +86,10 @@ function App() {
   const [showProgress, setShowProgress] = useState(false);
   const [progressSteps, setProgressSteps] = useState<J2534Progress[]>([]);
 
-  // Message sending
-  const [txArbId, setTxArbId] = useState("7E0");
-  const [txData, setTxData] = useState("01 00");
-  const [txExtended, setTxExtended] = useState(false);
+  // Message sending - load initial values from localStorage
+  const [txArbId, setTxArbId] = useState(() => localStorage.getItem("jester.txArbId") || "7E0");
+  const [txData, setTxData] = useState(() => localStorage.getItem("jester.txData") || "01 00");
+  const [txExtended, setTxExtended] = useState(() => localStorage.getItem("jester.txExtended") === "true");
 
   // Message log
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
@@ -135,6 +135,9 @@ function App() {
   const [configValue, setConfigValue] = useState("");
   const [configReadValue, setConfigReadValue] = useState<number | null>(null);
 
+  // About dialog - show on first launch
+  const [showAbout, setShowAbout] = useState(true);
+
   // Load platform info and devices on mount
   useEffect(() => {
     invoke<PlatformInfo>("get_platform_info").then(setPlatformInfo);
@@ -176,6 +179,19 @@ function App() {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logEntries, autoScroll]);
+
+  // Persist send message fields to localStorage
+  useEffect(() => {
+    localStorage.setItem("jester.txArbId", txArbId);
+  }, [txArbId]);
+
+  useEffect(() => {
+    localStorage.setItem("jester.txData", txData);
+  }, [txData]);
+
+  useEffect(() => {
+    localStorage.setItem("jester.txExtended", String(txExtended));
+  }, [txExtended]);
 
   // Polling for messages when connected
   useEffect(() => {
@@ -562,13 +578,30 @@ function App() {
     }
   };
 
+  const handleReadVersion = async () => {
+    try {
+      const version = await invoke<J2534VersionInfo>("j2534_read_version");
+      setVersionInfo(version);
+      addTestResult(
+        "Read Version",
+        true,
+        `FW: ${version.firmwareVersion}, DLL: ${version.dllVersion}, API: ${version.apiVersion}`
+      );
+    } catch (err) {
+      addTestResult("Read Version", false, String(err));
+    }
+  };
+
   const isWindows = platformInfo?.platform === "windows";
 
   return (
     <div className="app-container">
       {/* Connection Panel */}
       <div className="connection-panel">
-        <h2>J2534 Connection</h2>
+        <div className="panel-header">
+          <h2>J2534 Connection</h2>
+          <button className="about-btn" onClick={() => setShowAbout(true)} title="About Jester">?</button>
+        </div>
 
         {error && <div className="error-message">{error}</div>}
 
@@ -903,7 +936,7 @@ function App() {
                   <button className="api-btn" onClick={handleClearBuffers}>
                     Clear Buffers
                   </button>
-                  <button className="api-btn" onClick={fetchDeviceInfo}>
+                  <button className="api-btn" onClick={handleReadVersion}>
                     Read Version
                   </button>
                 </div>
@@ -1161,6 +1194,41 @@ function App() {
                   );
                 }
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* About Dialog */}
+      {showAbout && (
+        <div className="progress-overlay" onClick={() => setShowAbout(false)}>
+          <div className="about-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="about-header">
+              <h1>Jester</h1>
+              <p className="about-subtitle">An opinionated J2534-DLL-Tester</p>
+            </div>
+            <div className="about-content">
+              <p>
+                Jester is a diagnostic tool for testing and validating J2534 PassThru
+                devices and their DLL implementations.
+              </p>
+              <h4>Features</h4>
+              <ul>
+                <li>Connect to any J2534-compliant PassThru device</li>
+                <li>Send and receive CAN messages in real-time</li>
+                <li>Monitor message traffic with detailed logging</li>
+                <li>Test periodic messages and message filters</li>
+                <li>Read device information and voltage levels</li>
+                <li>Configure protocol parameters (baud rate, loopback, etc.)</li>
+                <li>Supports both standard (11-bit) and extended (29-bit) CAN IDs</li>
+              </ul>
+              <p className="about-note">
+                Designed for automotive engineers, ECU developers, and anyone working
+                with vehicle diagnostics.
+              </p>
+            </div>
+            <div className="about-footer">
+              <button className="primary" onClick={() => setShowAbout(false)}>Close</button>
             </div>
           </div>
         </div>
