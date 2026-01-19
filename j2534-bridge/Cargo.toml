@@ -1,0 +1,32 @@
+[package]
+name = "j2534-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "J2534 bridge process for cross-architecture DLL loading"
+license = "MIT"
+
+[[bin]]
+name = "j2534-bridge"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full", "net", "io-util", "sync"] }
+
+# Windows-specific dependencies
+[target.'cfg(windows)'.dependencies]
+libloading = "0.8"
+winreg = "0.52"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

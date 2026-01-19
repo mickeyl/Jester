@@ -1,6 +1,9 @@
 #[cfg(windows)]
 mod j2534;
 
+#[cfg(windows)]
+mod bridge_client;
+
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
