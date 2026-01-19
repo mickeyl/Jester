@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { save } from "@tauri-apps/plugin-dialog";
 import type {
   J2534Device,
   J2534Config,
@@ -14,10 +15,13 @@ import type {
   PeriodicMessageRequest,
   FilterRequest,
   TestResult,
+  SanityReport,
+  SanityOptions,
+  SanityStatus,
   ActivePeriodicMessage,
   ActiveFilter,
 } from "./types";
-import { J2534ConfigParams, J2534ConfigParamNames, J2534Protocols } from "./types";
+import { J2534ConfigParams, J2534ConfigParamNames } from "./types";
 import type { J2534Protocol } from "./types";
 
 interface LogEntry {
@@ -31,7 +35,7 @@ interface LogEntry {
   deviceTimestampUs?: number; // J2534 device timestamp in microseconds (RX only)
 }
 
-type TabType = "messages" | "device-info" | "api-test";
+type TabType = "messages" | "device-info" | "sanity" | "api-test";
 
 const STEP_LABELS: Record<string, string> = {
   load_dll: "Load J2534 DLL",
@@ -41,6 +45,9 @@ const STEP_LABELS: Record<string, string> = {
   loopback: "Loopback Settings",
   complete: "Connection Complete",
 };
+
+const SANITY_TEST_ARB_ID = 0x7e0;
+const SANITY_TEST_DATA = [0x02, 0x01, 0x00, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa];
 
 function formatHex(value: number, digits: number): string {
   return value.toString(16).toUpperCase().padStart(digits, "0");
@@ -56,6 +63,52 @@ function formatTimestamp(date: Date): string {
   const seconds = date.getSeconds().toString().padStart(2, "0");
   const ms = date.getMilliseconds().toString().padStart(3, "0");
   return `${hours}:${minutes}:${seconds}.${ms}`;
+}
+
+function formatDateTime(ms: number): string {
+  const date = new Date(ms);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(2)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}m ${remainder.toFixed(1)}s`;
+}
+
+function summarizeSanity(report: SanityReport) {
+  return report.steps.reduce(
+    (acc, step) => {
+      acc.total += 1;
+      acc[step.status] += 1;
+      return acc;
+    },
+    { pass: 0, fail: 0, warn: 0, skip: 0, total: 0 }
+  );
+}
+
+function sanityStatusIcon(status: SanityStatus): string {
+  switch (status) {
+    case "pass":
+      return "\u2713";
+    case "fail":
+      return "\u2717";
+    case "warn":
+      return "\u26A0";
+    case "skip":
+      return "\u25CB";
+    default:
+      return "?";
+  }
 }
 
 function parseHexInput(input: string): number[] {
@@ -123,6 +176,11 @@ function App() {
   const [testResults, setTestResults] = useState<TestResult[]>([]);
   const [activePeriodicMsgs, setActivePeriodicMsgs] = useState<ActivePeriodicMessage[]>([]);
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
+
+  // Sanity suite state
+  const [sanityReport, setSanityReport] = useState<SanityReport | null>(null);
+  const [sanityRunning, setSanityRunning] = useState(false);
+  const [sanityError, setSanityError] = useState<string | null>(null);
 
   // Periodic message form
   const [periodicArbId, setPeriodicArbId] = useState("7DF");
@@ -209,7 +267,7 @@ function App() {
 
   // Polling for messages when connected
   useEffect(() => {
-    if (status.connected) {
+    if (status.connected && !sanityRunning) {
       const poll = async () => {
         try {
           const messages = await invoke<CANMessage[]>("j2534_read_messages", {
@@ -257,7 +315,7 @@ function App() {
         }
       };
     }
-  }, [status.connected]);
+  }, [status.connected, sanityRunning]);
 
   // Fetch device info when connected
   useEffect(() => {
@@ -606,7 +664,59 @@ function App() {
     }
   };
 
+  const handleRunSanitySuite = useCallback(async () => {
+    if (!status.connected) return;
+
+    setSanityError(null);
+    setSanityRunning(true);
+
+    try {
+      const options: SanityOptions = {
+        arbId: SANITY_TEST_ARB_ID,
+        data: SANITY_TEST_DATA,
+        extended: false,
+        responseTimeoutMs: 800,
+        periodicIntervalMs: 100,
+      };
+
+      const report = await invoke<SanityReport>("j2534_run_sanity_suite", { options });
+      setSanityReport(report);
+      const newStatus = await invoke<ConnectionStatus>("j2534_get_status");
+      setStatus(newStatus);
+    } catch (err) {
+      setSanityError(String(err));
+    } finally {
+      setSanityRunning(false);
+    }
+  }, [status.connected]);
+
+  const handleSaveSanityReport = useCallback(async () => {
+    if (!sanityReport) return;
+
+    try {
+      const summary = summarizeSanity(sanityReport);
+      const payload = {
+        ...sanityReport,
+        summary,
+      };
+      const defaultName = `jester-sanity-report-${formatDateTime(sanityReport.completedAt).replace(/[:\s]/g, "-")}.json`;
+      const path = await save({
+        defaultPath: defaultName,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path || Array.isArray(path)) return;
+
+      await invoke("save_sanity_report", {
+        path,
+        contents: JSON.stringify(payload, null, 2),
+      });
+    } catch (err) {
+      setSanityError(String(err));
+    }
+  }, [sanityReport]);
+
   const isWindows = platformInfo?.platform === "windows";
+  const sanitySummary = sanityReport ? summarizeSanity(sanityReport) : null;
 
   return (
     <div className="app-container">
@@ -741,6 +851,12 @@ function App() {
               onClick={() => setActiveTab("device-info")}
             >
               Device Info
+            </button>
+            <button
+              className={`tab ${activeTab === "sanity" ? "active" : ""}`}
+              onClick={() => setActiveTab("sanity")}
+            >
+              Sanity Tests
             </button>
             <button
               className={`tab ${activeTab === "api-test" ? "active" : ""}`}
@@ -946,6 +1062,81 @@ function App() {
           <button className="secondary" onClick={fetchDeviceInfo}>
             Refresh
           </button>
+        </div>
+      )}
+
+      {/* Sanity Tests Tab */}
+      {activeTab === "sanity" && (
+        <div className="sanity-panel">
+          <div className="sanity-header">
+            <div>
+              <h2>Sanity Suite</h2>
+              <p className="sanity-note">
+                Fully-automated checks for core J2534 API calls. Uses standard ID 0x7E0
+                with payload 02 01 00 AA AA AA AA AA to trigger ECU responses when present.
+              </p>
+              <p className="sanity-note">Missing loopback support is reported as a warning.</p>
+            </div>
+            <div className="sanity-actions">
+              <button
+                className="primary"
+                onClick={handleRunSanitySuite}
+                disabled={sanityRunning || !status.connected}
+              >
+                {sanityRunning ? "Running..." : "Run Suite"}
+              </button>
+              <button
+                className="secondary"
+                onClick={handleSaveSanityReport}
+                disabled={!sanityReport}
+              >
+                Save Report
+              </button>
+            </div>
+          </div>
+
+          {sanityError && <div className="error-message">{sanityError}</div>}
+
+          {sanityReport ? (
+            <>
+              <div className="sanity-summary">
+                <div className="summary-card">
+                  <div className="summary-label">Last Run</div>
+                  <div className="summary-value">{formatDateTime(sanityReport.completedAt)}</div>
+                </div>
+                <div className="summary-card">
+                  <div className="summary-label">Duration</div>
+                  <div className="summary-value">{formatDuration(sanityReport.durationMs)}</div>
+                </div>
+                <div className="summary-card">
+                  <div className="summary-label">Results</div>
+                  <div className="summary-value">
+                    {sanitySummary?.pass ?? 0}P / {sanitySummary?.fail ?? 0}F / {sanitySummary?.warn ?? 0}W / {sanitySummary?.skip ?? 0}S
+                  </div>
+                </div>
+                <div className="summary-card">
+                  <div className="summary-label">Device</div>
+                  <div className="summary-value">{sanityReport.deviceName || "N/A"}</div>
+                  <div className="summary-subvalue">
+                    {sanityReport.baudRate / 1000} kbps | Extended {sanityReport.useExtendedId ? "On" : "Off"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="sanity-results">
+                {sanityReport.steps.map((step, idx) => (
+                  <div key={`${step.name}-${idx}`} className={`result-entry ${step.status}`}>
+                    <span className="result-icon">{sanityStatusIcon(step.status)}</span>
+                    <span className="result-name">{step.name}</span>
+                    <span className="result-message">{step.message}</span>
+                    <span className="result-duration">{step.durationMs}ms</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">No sanity report yet</div>
+          )}
         </div>
       )}
 

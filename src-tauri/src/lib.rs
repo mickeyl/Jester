@@ -9,6 +9,7 @@ mod j2534_unified;
 
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 
 #[cfg(windows)]
@@ -135,6 +136,37 @@ pub struct ConfigRequest {
     pub value: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SanityOptions {
+    pub arb_id: u32,
+    pub data: Vec<u8>,
+    pub extended: bool,
+    pub response_timeout_ms: u32,
+    pub periodic_interval_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SanityStepResult {
+    pub name: String,
+    pub status: String, // "pass", "fail", "warn", "skip"
+    pub message: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SanityReport {
+    pub started_at: u64,
+    pub completed_at: u64,
+    pub duration_ms: u64,
+    pub device_name: String,
+    pub baud_rate: u32,
+    pub use_extended_id: bool,
+    pub steps: Vec<SanityStepResult>,
+}
+
 pub struct AppState {
     #[cfg(windows)]
     connection: Arc<Mutex<Option<UnifiedConnection>>>,
@@ -167,6 +199,28 @@ impl Default for AppState {
             baud_rate: Arc::new(Mutex::new(500000)),
         }
     }
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn push_sanity_step(
+    steps: &mut Vec<SanityStepResult>,
+    name: &str,
+    status: &str,
+    message: String,
+    start: Instant,
+) {
+    steps.push(SanityStepResult {
+        name: name.to_string(),
+        status: status.to_string(),
+        message,
+        duration_ms: start.elapsed().as_millis() as u64,
+    });
 }
 
 #[tauri::command]
@@ -656,6 +710,332 @@ async fn j2534_get_data_rate(state: State<'_, AppState>) -> Result<u32, String> 
     }
 }
 
+#[tauri::command]
+async fn j2534_run_sanity_suite(
+    options: SanityOptions,
+    state: State<'_, AppState>,
+) -> Result<SanityReport, String> {
+    #[cfg(windows)]
+    {
+        if options.data.is_empty() || options.data.len() > 8 {
+            return Err("ERR_INVALID_DATA_LENGTH: Sanity test data must be 1-8 bytes".to_string());
+        }
+
+        let started_at = now_millis();
+        let device_name = state.device_name.lock().unwrap().clone();
+        let baud_rate = *state.baud_rate.lock().unwrap();
+        let mut steps: Vec<SanityStepResult> = Vec::new();
+
+        let mut connection = state.connection.lock().unwrap();
+        let conn = connection
+            .as_mut()
+            .ok_or("ERR_NOT_CONNECTED: No active connection")?;
+
+        // Read version
+        let start = Instant::now();
+        match conn.read_version() {
+            Ok(version) => {
+                push_sanity_step(
+                    &mut steps,
+                    "Read Version",
+                    "pass",
+                    format!(
+                        "FW: {}, DLL: {}, API: {}",
+                        version.firmware_version, version.dll_version, version.api_version
+                    ),
+                    start,
+                );
+            }
+            Err(err) => {
+                push_sanity_step(&mut steps, "Read Version", "fail", err, start);
+            }
+        }
+
+        // Read battery voltage
+        let start = Instant::now();
+        match conn.read_battery_voltage() {
+            Ok(voltage) => {
+                push_sanity_step(
+                    &mut steps,
+                    "Read Battery Voltage",
+                    "pass",
+                    format!("{:.2} V", voltage),
+                    start,
+                );
+            }
+            Err(err) => {
+                push_sanity_step(&mut steps, "Read Battery Voltage", "fail", err, start);
+            }
+        }
+
+        // Read programming voltage
+        let start = Instant::now();
+        match conn.read_programming_voltage() {
+            Ok(voltage) => {
+                push_sanity_step(
+                    &mut steps,
+                    "Read Programming Voltage",
+                    "pass",
+                    format!("{:.2} V", voltage),
+                    start,
+                );
+            }
+            Err(err) => {
+                push_sanity_step(
+                    &mut steps,
+                    "Read Programming Voltage",
+                    "fail",
+                    err,
+                    start,
+                );
+            }
+        }
+
+        // Clear buffers
+        let start = Instant::now();
+        match conn.clear_buffers() {
+            Ok(()) => {
+                push_sanity_step(
+                    &mut steps,
+                    "Clear Buffers",
+                    "pass",
+                    "Buffers cleared".to_string(),
+                    start,
+                );
+            }
+            Err(err) => {
+                push_sanity_step(&mut steps, "Clear Buffers", "fail", err, start);
+            }
+        }
+
+        // Get data rate
+        let start = Instant::now();
+        match conn.get_data_rate() {
+            Ok(rate) => {
+                push_sanity_step(
+                    &mut steps,
+                    "Get Data Rate",
+                    "pass",
+                    format!("{} bps", rate),
+                    start,
+                );
+            }
+            Err(err) => {
+                push_sanity_step(&mut steps, "Get Data Rate", "fail", err, start);
+            }
+        }
+
+        // Loopback support (warn if unsupported)
+        let start = Instant::now();
+        let mut loopback_supported = false;
+        let mut original_loopback: Option<bool> = None;
+        let mut loopback_set = false;
+        let mut loopback_status = "warn";
+        let mut loopback_message = String::new();
+
+        match conn.get_loopback() {
+            Ok(state) => {
+                loopback_supported = true;
+                original_loopback = Some(state);
+                loopback_message = format!("Loopback reported {}", if state { "ON" } else { "OFF" });
+            }
+            Err(err) => {
+                loopback_message = format!("Loopback not supported: {}", err);
+            }
+        }
+
+        if loopback_supported {
+            match conn.set_loopback(true) {
+                Ok(()) => {
+                    loopback_set = true;
+                    match conn.get_loopback() {
+                        Ok(state) => {
+                            if state {
+                                loopback_status = "pass";
+                                loopback_message = "Loopback enabled".to_string();
+                            } else {
+                                loopback_status = "warn";
+                                loopback_message = "Loopback set but readback is OFF".to_string();
+                            }
+                        }
+                        Err(err) => {
+                            loopback_status = "warn";
+                            loopback_message = format!("Loopback set; readback failed: {}", err);
+                        }
+                    }
+                }
+                Err(err) => {
+                    loopback_status = "warn";
+                    loopback_message = format!("Loopback set failed: {}", err);
+                }
+            }
+        }
+
+        push_sanity_step(
+            &mut steps,
+            "Loopback",
+            loopback_status,
+            loopback_message,
+            start,
+        );
+
+        // Send message + read for response
+        let start = Instant::now();
+        let send_result = conn.send_message(options.arb_id, &options.data, options.extended);
+        if let Err(err) = send_result {
+            push_sanity_step(&mut steps, "Send/Receive", "fail", err, start);
+        } else {
+            *state.messages_sent.lock().unwrap() += 1;
+            let mut received: Vec<CANMessage> = Vec::new();
+            let deadline = Instant::now()
+                + Duration::from_millis(options.response_timeout_ms.max(100) as u64);
+            let read_timeout = options.response_timeout_ms.min(250).max(50);
+            let mut read_failed = false;
+
+            while Instant::now() < deadline {
+                match conn.read_messages(read_timeout) {
+                    Ok(mut msgs) => {
+                        if !msgs.is_empty() {
+                            received.append(&mut msgs);
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        push_sanity_step(&mut steps, "Send/Receive", "fail", err, start);
+                        received.clear();
+                        read_failed = true;
+                        break;
+                    }
+                }
+            }
+
+            if read_failed {
+                // Failure already recorded
+            } else if !received.is_empty() {
+                *state.messages_received.lock().unwrap() += received.len() as u64;
+                let first = &received[0];
+                push_sanity_step(
+                    &mut steps,
+                    "Send/Receive",
+                    "pass",
+                    format!(
+                        "Received {} message(s), first ID 0x{:X}",
+                        received.len(),
+                        first.arb_id
+                    ),
+                    start,
+                );
+            } else {
+                push_sanity_step(
+                    &mut steps,
+                    "Send/Receive",
+                    "warn",
+                    "No response (bus quiet or loopback filtered)".to_string(),
+                    start,
+                );
+            }
+        }
+
+        // Periodic message start/stop
+        let start = Instant::now();
+        match conn.start_periodic_message(
+            options.arb_id,
+            &options.data,
+            options.periodic_interval_ms.max(10),
+            options.extended,
+        ) {
+            Ok(msg_id) => {
+                std::thread::sleep(Duration::from_millis(200));
+                match conn.stop_periodic_message(msg_id) {
+                    Ok(()) => {
+                        push_sanity_step(
+                            &mut steps,
+                            "Periodic Message",
+                            "pass",
+                            format!("Started and stopped (ID {})", msg_id),
+                            start,
+                        );
+                    }
+                    Err(err) => {
+                        push_sanity_step(&mut steps, "Periodic Message", "fail", err, start);
+                    }
+                }
+            }
+            Err(err) => {
+                push_sanity_step(&mut steps, "Periodic Message", "fail", err, start);
+            }
+        }
+
+        // Add/remove filter
+        let start = Instant::now();
+        let mask = [0u8, 0u8, 0u8, 0u8];
+        let pattern = [0u8, 0u8, 0u8, 0u8];
+        match conn.add_filter(PASS_FILTER, &mask, &pattern, options.extended) {
+            Ok(filter_id) => match conn.remove_filter(filter_id) {
+                Ok(()) => {
+                    push_sanity_step(
+                        &mut steps,
+                        "Message Filter",
+                        "pass",
+                        format!("Added and removed (ID {})", filter_id),
+                        start,
+                    );
+                }
+                Err(err) => {
+                    push_sanity_step(&mut steps, "Message Filter", "fail", err, start);
+                }
+            },
+            Err(err) => {
+                push_sanity_step(&mut steps, "Message Filter", "fail", err, start);
+            }
+        }
+
+        // Restore loopback if we enabled it
+        if loopback_set && original_loopback == Some(false) {
+            let start = Instant::now();
+            match conn.set_loopback(false) {
+                Ok(()) => {
+                    push_sanity_step(
+                        &mut steps,
+                        "Restore Loopback",
+                        "pass",
+                        "Loopback disabled".to_string(),
+                        start,
+                    );
+                }
+                Err(err) => {
+                    push_sanity_step(&mut steps, "Restore Loopback", "warn", err, start);
+                }
+            }
+        }
+
+        let completed_at = now_millis();
+        let duration_ms = completed_at.saturating_sub(started_at);
+
+        Ok(SanityReport {
+            started_at,
+            completed_at,
+            duration_ms,
+            device_name,
+            baud_rate,
+            use_extended_id: options.extended,
+            steps,
+        })
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (options, state);
+        Err("ERR_J2534_NOT_SUPPORTED: J2534 is only supported on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+fn save_sanity_report(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents)
+        .map_err(|e| format!("ERR_SAVE_FAILED: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -686,6 +1066,8 @@ pub fn run() {
             j2534_get_loopback,
             j2534_set_loopback,
             j2534_get_data_rate,
+            j2534_run_sanity_suite,
+            save_sanity_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

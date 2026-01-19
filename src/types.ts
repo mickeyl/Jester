@@ -166,6 +166,33 @@ export interface TestResult {
   timestamp: number;
 }
 
+export type SanityStatus = "pass" | "fail" | "warn" | "skip";
+
+export interface SanityStepResult {
+  name: string;
+  status: SanityStatus;
+  message: string;
+  durationMs: number;
+}
+
+export interface SanityReport {
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  deviceName: string;
+  baudRate: number;
+  useExtendedId: boolean;
+  steps: SanityStepResult[];
+}
+
+export interface SanityOptions {
+  arbId: number;
+  data: number[];
+  extended: boolean;
+  responseTimeoutMs: number;
+  periodicIntervalMs: number;
+}
+
 export interface ActivePeriodicMessage {
   msgId: number;
   arbId: number;
