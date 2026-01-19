@@ -195,21 +195,24 @@ impl BridgeClient {
             "x86_64-pc-windows-msvc"
         };
 
-        let dev_path = exe_dir
-            .parent()  // -> target/x86_64-pc-windows-msvc/
-            .and_then(|p| p.parent())  // -> target/
-            .and_then(|p| p.parent())  // -> src-tauri/
-            .and_then(|p| p.parent())  // -> Jester/
-            .map(|p| p.join("j2534-bridge")
-                      .join("target")
-                      .join(target_triple)
-                      .join("debug")
-                      .join("j2534-bridge.exe"));
+        // Try release build first, then debug
+        for build_type in &["release", "debug"] {
+            let dev_path = exe_dir
+                .parent()  // -> target/x86_64-pc-windows-msvc/
+                .and_then(|p| p.parent())  // -> target/
+                .and_then(|p| p.parent())  // -> src-tauri/
+                .and_then(|p| p.parent())  // -> Jester/
+                .map(|p| p.join("j2534-bridge")
+                          .join("target")
+                          .join(target_triple)
+                          .join(build_type)
+                          .join("j2534-bridge.exe"));
 
-        if let Some(path) = dev_path {
-            eprintln!("[client] Looking for bridge at: {:?}", path);
-            if path.exists() {
-                return Ok(path);
+            if let Some(path) = dev_path {
+                eprintln!("[client] Looking for bridge at: {:?}", path);
+                if path.exists() {
+                    return Ok(path);
+                }
             }
         }
 

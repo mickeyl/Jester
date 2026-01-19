@@ -768,11 +768,6 @@ impl J2534Connection {
             }
         }
 
-        let base_timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_micros() as u64)
-            .unwrap_or(0);
-
         for i in 0..num_msgs as usize {
             let msg = &msg_buffer[i];
 
@@ -815,7 +810,7 @@ impl J2534Connection {
                 }
 
                 messages.push(CANMessage {
-                    timestamp_us: base_timestamp + msg.timestamp as u64,
+                    timestamp_us: msg.timestamp as u64, // Raw J2534 device timestamp
                     arb_id,
                     extended,
                     data,

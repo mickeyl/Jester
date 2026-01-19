@@ -28,6 +28,7 @@ interface LogEntry {
   extended?: boolean;
   data?: number[];
   message?: string;
+  deviceTimestampUs?: number; // J2534 device timestamp in microseconds (RX only)
 }
 
 type TabType = "messages" | "device-info" | "api-test";
@@ -216,15 +217,17 @@ function App() {
           });
 
           if (messages.length > 0) {
+            const now = new Date();
             setLogEntries((prev) => [
               ...prev,
               ...messages.map((msg) => ({
                 id: ++logIdRef.current,
-                timestamp: new Date(msg.timestampUs / 1000),
+                timestamp: now,
                 direction: "rx" as const,
                 arbId: msg.arbId,
                 extended: msg.extended,
                 data: msg.data,
+                deviceTimestampUs: msg.timestampUs,
               })),
             ]);
 
@@ -863,6 +866,11 @@ function App() {
                         <span className="data">
                           [{entry.data!.length}] {formatData(entry.data!)}
                         </span>
+                        {entry.deviceTimestampUs !== undefined && (
+                          <span className="device-timestamp">
+                            dt:{(entry.deviceTimestampUs / 1000).toFixed(1)}ms
+                          </span>
+                        )}
                       </>
                     )}
                   </div>

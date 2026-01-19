@@ -412,6 +412,14 @@ button.small {
   color: var(--text-secondary);
 }
 
+.log-entry .device-timestamp {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-left: auto;
+  padding-left: 8px;
+  white-space: nowrap;
+}
+
 .log-entry.error {
   color: var(--error);
 }
