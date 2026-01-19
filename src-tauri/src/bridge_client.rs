@@ -31,6 +31,9 @@ pub enum Request {
     ReadMessages {
         timeout_ms: u32,
     },
+    ReadMessagesWithLoopback {
+        timeout_ms: u32,
+    },
     ClearBuffers,
     ReadVersion,
     GetLastError,

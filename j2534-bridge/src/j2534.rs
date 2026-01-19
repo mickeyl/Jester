@@ -748,6 +748,14 @@ impl J2534Connection {
     }
 
     pub fn read_messages(&self, timeout_ms: u32) -> Result<Vec<CANMessage>, String> {
+        self.read_messages_inner(timeout_ms, false)
+    }
+
+    pub fn read_messages_with_loopback(&self, timeout_ms: u32) -> Result<Vec<CANMessage>, String> {
+        self.read_messages_inner(timeout_ms, true)
+    }
+
+    fn read_messages_inner(&self, timeout_ms: u32, include_loopback: bool) -> Result<Vec<CANMessage>, String> {
         let mut messages = Vec::new();
 
         // Create message buffer - use Vec since PassThruMsg is large and doesn't implement Copy
@@ -772,7 +780,8 @@ impl J2534Connection {
             let msg = &msg_buffer[i];
 
             // Skip TX echo messages (loopback) - these have TX_MSG_TYPE flag set
-            if (msg.rx_status & TX_MSG_TYPE) != 0 {
+            // Unless include_loopback is true (for sanity testing)
+            if !include_loopback && (msg.rx_status & TX_MSG_TYPE) != 0 {
                 continue;
             }
 
@@ -788,7 +797,10 @@ impl J2534Connection {
 
                 // Driver workaround: filter out TX echoes by matching against recently sent messages
                 // Some drivers don't set TX_MSG_TYPE flag even when loopback is enabled
-                let is_tx_echo = if let Ok(mut sent) = self.sent_messages.lock() {
+                // Skip this filter if include_loopback is true
+                let is_tx_echo = if include_loopback {
+                    false
+                } else if let Ok(mut sent) = self.sent_messages.lock() {
                     // Clean up old entries while we have the lock
                     let cutoff = std::time::Instant::now() - std::time::Duration::from_millis(500);
                     sent.retain(|m| m.timestamp > cutoff);

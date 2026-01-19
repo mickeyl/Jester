@@ -812,6 +812,8 @@ button.small {
   padding: 16px;
   border: 1px solid var(--border-primary);
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
@@ -820,6 +822,7 @@ button.small {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
 @media (max-width: 900px) {
@@ -851,6 +854,7 @@ button.small {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
   margin: 12px 0 16px;
+  flex-shrink: 0;
 }
 
 .summary-card {
@@ -885,7 +889,9 @@ button.small {
   background: var(--bg-primary);
   border-radius: 6px;
   border: 1px solid var(--border-primary);
-  overflow: hidden;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .sanity-results .result-entry {

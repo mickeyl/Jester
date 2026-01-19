@@ -210,17 +210,20 @@ fn now_millis() -> u64 {
 
 fn push_sanity_step(
     steps: &mut Vec<SanityStepResult>,
+    app: &AppHandle,
     name: &str,
     status: &str,
     message: String,
     start: Instant,
 ) {
-    steps.push(SanityStepResult {
+    let step = SanityStepResult {
         name: name.to_string(),
         status: status.to_string(),
         message,
         duration_ms: start.elapsed().as_millis() as u64,
-    });
+    };
+    let _ = app.emit("sanity-step", &step);
+    steps.push(step);
 }
 
 #[tauri::command]
@@ -713,6 +716,7 @@ async fn j2534_get_data_rate(state: State<'_, AppState>) -> Result<u32, String> 
 #[tauri::command]
 async fn j2534_run_sanity_suite(
     options: SanityOptions,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SanityReport, String> {
     #[cfg(windows)]
@@ -737,6 +741,7 @@ async fn j2534_run_sanity_suite(
             Ok(version) => {
                 push_sanity_step(
                     &mut steps,
+                    &app,
                     "Read Version",
                     "pass",
                     format!(
@@ -747,7 +752,7 @@ async fn j2534_run_sanity_suite(
                 );
             }
             Err(err) => {
-                push_sanity_step(&mut steps, "Read Version", "fail", err, start);
+                push_sanity_step(&mut steps, &app, "Read Version", "fail", err, start);
             }
         }
 
@@ -757,6 +762,7 @@ async fn j2534_run_sanity_suite(
             Ok(voltage) => {
                 push_sanity_step(
                     &mut steps,
+                    &app,
                     "Read Battery Voltage",
                     "pass",
                     format!("{:.2} V", voltage),
@@ -764,7 +770,7 @@ async fn j2534_run_sanity_suite(
                 );
             }
             Err(err) => {
-                push_sanity_step(&mut steps, "Read Battery Voltage", "fail", err, start);
+                push_sanity_step(&mut steps, &app, "Read Battery Voltage", "fail", err, start);
             }
         }
 
@@ -774,6 +780,7 @@ async fn j2534_run_sanity_suite(
             Ok(voltage) => {
                 push_sanity_step(
                     &mut steps,
+                    &app,
                     "Read Programming Voltage",
                     "pass",
                     format!("{:.2} V", voltage),
@@ -783,6 +790,7 @@ async fn j2534_run_sanity_suite(
             Err(err) => {
                 push_sanity_step(
                     &mut steps,
+                    &app,
                     "Read Programming Voltage",
                     "fail",
                     err,
@@ -797,6 +805,7 @@ async fn j2534_run_sanity_suite(
             Ok(()) => {
                 push_sanity_step(
                     &mut steps,
+                    &app,
                     "Clear Buffers",
                     "pass",
                     "Buffers cleared".to_string(),
@@ -804,7 +813,7 @@ async fn j2534_run_sanity_suite(
                 );
             }
             Err(err) => {
-                push_sanity_step(&mut steps, "Clear Buffers", "fail", err, start);
+                push_sanity_step(&mut steps, &app, "Clear Buffers", "fail", err, start);
             }
         }
 
@@ -814,6 +823,7 @@ async fn j2534_run_sanity_suite(
             Ok(rate) => {
                 push_sanity_step(
                     &mut steps,
+                    &app,
                     "Get Data Rate",
                     "pass",
                     format!("{} bps", rate),
@@ -821,7 +831,7 @@ async fn j2534_run_sanity_suite(
                 );
             }
             Err(err) => {
-                push_sanity_step(&mut steps, "Get Data Rate", "fail", err, start);
+                push_sanity_step(&mut steps, &app, "Get Data Rate", "fail", err, start);
             }
         }
 
@@ -829,9 +839,9 @@ async fn j2534_run_sanity_suite(
         let start = Instant::now();
         let mut loopback_supported = false;
         let mut original_loopback: Option<bool> = None;
-        let mut loopback_set = false;
+        let mut loopback_enabled = false;
         let mut loopback_status = "warn";
-        let mut loopback_message = String::new();
+        let mut loopback_message;
 
         match conn.get_loopback() {
             Ok(state) => {
@@ -847,10 +857,10 @@ async fn j2534_run_sanity_suite(
         if loopback_supported {
             match conn.set_loopback(true) {
                 Ok(()) => {
-                    loopback_set = true;
                     match conn.get_loopback() {
                         Ok(state) => {
                             if state {
+                                loopback_enabled = true;
                                 loopback_status = "pass";
                                 loopback_message = "Loopback enabled".to_string();
                             } else {
@@ -873,17 +883,93 @@ async fn j2534_run_sanity_suite(
 
         push_sanity_step(
             &mut steps,
-            "Loopback",
+            &app,
+            "Loopback Setting",
             loopback_status,
             loopback_message,
             start,
         );
 
-        // Send message + read for response
+        // Loopback Echo test - send message and expect to receive our own echo
+        // This should always pass if loopback is properly enabled
+        if loopback_enabled {
+            let start = Instant::now();
+            let send_result = conn.send_message(options.arb_id, &options.data, options.extended);
+            if let Err(err) = send_result {
+                push_sanity_step(&mut steps, &app, "Loopback Echo", "fail", err, start);
+            } else {
+                *state.messages_sent.lock().unwrap() += 1;
+                let mut received: Vec<CANMessage> = Vec::new();
+                let deadline = Instant::now() + Duration::from_millis(500);
+                let read_timeout = 100;
+                let mut read_failed = false;
+
+                while Instant::now() < deadline {
+                    match conn.read_messages_with_loopback(read_timeout) {
+                        Ok(mut msgs) => {
+                            if !msgs.is_empty() {
+                                received.append(&mut msgs);
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            push_sanity_step(&mut steps, &app, "Loopback Echo", "fail", err, start);
+                            received.clear();
+                            read_failed = true;
+                            break;
+                        }
+                    }
+                }
+
+                if read_failed {
+                    // Failure already recorded
+                } else if !received.is_empty() {
+                    *state.messages_received.lock().unwrap() += received.len() as u64;
+                    let first = &received[0];
+                    let is_echo = first.arb_id == options.arb_id;
+                    push_sanity_step(
+                        &mut steps,
+                        &app,
+                        "Loopback Echo",
+                        "pass",
+                        format!(
+                            "Echo received (ID 0x{:X}){}",
+                            first.arb_id,
+                            if is_echo { "" } else { " - ID mismatch" }
+                        ),
+                        start,
+                    );
+                } else {
+                    push_sanity_step(
+                        &mut steps,
+                        &app,
+                        "Loopback Echo",
+                        "fail",
+                        "No echo received despite loopback enabled".to_string(),
+                        start,
+                    );
+                }
+            }
+
+            // Disable loopback for bus response test
+            let _ = conn.set_loopback(false);
+        } else {
+            push_sanity_step(
+                &mut steps,
+                &app,
+                "Loopback Echo",
+                "skip",
+                "Loopback not available".to_string(),
+                Instant::now(),
+            );
+        }
+
+        // Bus Response test - send message and check for real bus traffic
+        // This may pass or warn depending on what's connected to the bus
         let start = Instant::now();
         let send_result = conn.send_message(options.arb_id, &options.data, options.extended);
         if let Err(err) = send_result {
-            push_sanity_step(&mut steps, "Send/Receive", "fail", err, start);
+            push_sanity_step(&mut steps, &app, "Bus Response", "fail", err, start);
         } else {
             *state.messages_sent.lock().unwrap() += 1;
             let mut received: Vec<CANMessage> = Vec::new();
@@ -901,7 +987,7 @@ async fn j2534_run_sanity_suite(
                         }
                     }
                     Err(err) => {
-                        push_sanity_step(&mut steps, "Send/Receive", "fail", err, start);
+                        push_sanity_step(&mut steps, &app, "Bus Response", "fail", err, start);
                         received.clear();
                         read_failed = true;
                         break;
@@ -916,7 +1002,8 @@ async fn j2534_run_sanity_suite(
                 let first = &received[0];
                 push_sanity_step(
                     &mut steps,
-                    "Send/Receive",
+                    &app,
+                    "Bus Response",
                     "pass",
                     format!(
                         "Received {} message(s), first ID 0x{:X}",
@@ -928,83 +1015,304 @@ async fn j2534_run_sanity_suite(
             } else {
                 push_sanity_step(
                     &mut steps,
-                    "Send/Receive",
+                    &app,
+                    "Bus Response",
                     "warn",
-                    "No response (bus quiet or loopback filtered)".to_string(),
+                    "No response (bus quiet or no ECU present)".to_string(),
                     start,
                 );
             }
         }
 
-        // Periodic message start/stop
-        let start = Instant::now();
-        match conn.start_periodic_message(
-            options.arb_id,
-            &options.data,
-            options.periodic_interval_ms.max(10),
-            options.extended,
-        ) {
-            Ok(msg_id) => {
-                std::thread::sleep(Duration::from_millis(200));
-                match conn.stop_periodic_message(msg_id) {
+        // Periodic message functional test - verify messages actually appear in loopback
+        // Use a different arb ID to distinguish from manual sends
+        let periodic_test_id: u32 = 0x7FF;
+        let periodic_test_data = [0xDE, 0xAD, 0xBE, 0xEF];
+
+        if loopback_supported {
+            let start = Instant::now();
+            // Enable loopback for this test
+            if conn.set_loopback(true).is_err() {
+                push_sanity_step(
+                    &mut steps,
+                    &app,
+                    "Periodic Message",
+                    "skip",
+                    "Could not enable loopback for test".to_string(),
+                    start,
+                );
+            } else {
+                // Clear buffers before test
+                let _ = conn.clear_buffers();
+
+                match conn.start_periodic_message(
+                    periodic_test_id,
+                    &periodic_test_data,
+                    options.periodic_interval_ms.max(50),
+                    false, // Use standard ID for test
+                ) {
+                    Ok(msg_id) => {
+                        // Wait for several intervals to accumulate messages
+                        let wait_time = options.periodic_interval_ms.max(50) * 4;
+                        std::thread::sleep(Duration::from_millis(wait_time as u64));
+
+                        // Stop periodic before reading to avoid race
+                        let stop_result = conn.stop_periodic_message(msg_id);
+
+                        // Read accumulated messages (with loopback to see our own periodic)
+                        let mut periodic_count = 0;
+                        let deadline = Instant::now() + Duration::from_millis(200);
+                        while Instant::now() < deadline {
+                            match conn.read_messages_with_loopback(50) {
+                                Ok(msgs) => {
+                                    for msg in &msgs {
+                                        if msg.arb_id == periodic_test_id {
+                                            periodic_count += 1;
+                                        }
+                                    }
+                                    if msgs.is_empty() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+
+                        if stop_result.is_err() {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Periodic Message",
+                                "fail",
+                                "Failed to stop periodic message".to_string(),
+                                start,
+                            );
+                        } else if periodic_count >= 2 {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Periodic Message",
+                                "pass",
+                                format!("Received {} periodic messages via loopback", periodic_count),
+                                start,
+                            );
+                        } else if periodic_count == 1 {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Periodic Message",
+                                "warn",
+                                "Only 1 periodic message received (timing issue?)".to_string(),
+                                start,
+                            );
+                        } else {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Periodic Message",
+                                "fail",
+                                "No periodic messages received despite loopback".to_string(),
+                                start,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        push_sanity_step(&mut steps, &app, "Periodic Message", "fail", err, start);
+                    }
+                }
+
+                // Disable loopback after test
+                let _ = conn.set_loopback(false);
+            }
+        } else {
+            // Without loopback, just do basic API test
+            let start = Instant::now();
+            match conn.start_periodic_message(
+                periodic_test_id,
+                &periodic_test_data,
+                options.periodic_interval_ms.max(50),
+                false,
+            ) {
+                Ok(msg_id) => {
+                    std::thread::sleep(Duration::from_millis(100));
+                    match conn.stop_periodic_message(msg_id) {
+                        Ok(()) => {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Periodic Message",
+                                "warn",
+                                format!("API works (ID {}), but no loopback to verify delivery", msg_id),
+                                start,
+                            );
+                        }
+                        Err(err) => {
+                            push_sanity_step(&mut steps, &app, "Periodic Message", "fail", err, start);
+                        }
+                    }
+                }
+                Err(err) => {
+                    push_sanity_step(&mut steps, &app, "Periodic Message", "fail", err, start);
+                }
+            }
+        }
+
+        // Message filter functional test - verify filtering actually works
+        // Test with two different IDs: one that should pass, one that should be blocked
+        let filter_pass_id: u32 = 0x100;
+        let filter_block_id: u32 = 0x200;
+        let filter_test_data = [0x11, 0x22, 0x33, 0x44];
+
+        if loopback_supported {
+            let start = Instant::now();
+            // Enable loopback for this test
+            if conn.set_loopback(true).is_err() {
+                push_sanity_step(
+                    &mut steps,
+                    &app,
+                    "Message Filter",
+                    "skip",
+                    "Could not enable loopback for test".to_string(),
+                    start,
+                );
+            } else {
+                // Clear existing filters and buffers
+                let _ = conn.clear_filters();
+                let _ = conn.clear_buffers();
+
+                // Add a pass filter that only allows filter_pass_id (0x100)
+                // Mask 0x7FF means all 11 bits must match, pattern is the ID to match
+                let full_mask = [0x00, 0x00, 0x07, 0xFF]; // Match all 11 bits of standard CAN ID
+                let pattern = [(filter_pass_id >> 24) as u8, (filter_pass_id >> 16) as u8,
+                              (filter_pass_id >> 8) as u8, filter_pass_id as u8];
+
+                match conn.add_filter(PASS_FILTER, &full_mask, &pattern, false) {
+                    Ok(filter_id) => {
+                        // Send message that should pass filter
+                        let _ = conn.send_message(filter_pass_id, &filter_test_data, false);
+                        // Send message that should be blocked
+                        let _ = conn.send_message(filter_block_id, &filter_test_data, false);
+
+                        std::thread::sleep(Duration::from_millis(100));
+
+                        // Read messages and check what we got
+                        let mut pass_count = 0;
+                        let mut block_count = 0;
+                        let deadline = Instant::now() + Duration::from_millis(200);
+                        while Instant::now() < deadline {
+                            match conn.read_messages_with_loopback(50) {
+                                Ok(msgs) => {
+                                    for msg in &msgs {
+                                        if msg.arb_id == filter_pass_id {
+                                            pass_count += 1;
+                                        } else if msg.arb_id == filter_block_id {
+                                            block_count += 1;
+                                        }
+                                    }
+                                    if msgs.is_empty() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+
+                        // Remove filter and restore pass-all
+                        let _ = conn.remove_filter(filter_id);
+
+                        // Evaluate results
+                        if pass_count > 0 && block_count == 0 {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Message Filter",
+                                "pass",
+                                format!("Filter working: {} passed, {} blocked", pass_count, block_count),
+                                start,
+                            );
+                        } else if pass_count > 0 && block_count > 0 {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Message Filter",
+                                "warn",
+                                format!("Filter partial: {} passed, {} leaked through", pass_count, block_count),
+                                start,
+                            );
+                        } else if pass_count == 0 && block_count == 0 {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Message Filter",
+                                "warn",
+                                "No messages received (filter may be blocking all or loopback issue)".to_string(),
+                                start,
+                            );
+                        } else {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Message Filter",
+                                "fail",
+                                format!("Filter inverted? {} passed (expected), {} blocked (unexpected)", pass_count, block_count),
+                                start,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        push_sanity_step(&mut steps, &app, "Message Filter", "fail", err, start);
+                    }
+                }
+
+                // Restore pass-all filter and disable loopback
+                let pass_all_mask = [0u8, 0u8, 0u8, 0u8];
+                let pass_all_pattern = [0u8, 0u8, 0u8, 0u8];
+                let _ = conn.add_filter(PASS_FILTER, &pass_all_mask, &pass_all_pattern, options.extended);
+                let _ = conn.set_loopback(false);
+            }
+        } else {
+            // Without loopback, just do basic API test
+            let start = Instant::now();
+            let mask = [0u8, 0u8, 0u8, 0u8];
+            let pattern = [0u8, 0u8, 0u8, 0u8];
+            match conn.add_filter(PASS_FILTER, &mask, &pattern, options.extended) {
+                Ok(filter_id) => match conn.remove_filter(filter_id) {
                     Ok(()) => {
                         push_sanity_step(
                             &mut steps,
-                            "Periodic Message",
-                            "pass",
-                            format!("Started and stopped (ID {})", msg_id),
+                            &app,
+                            "Message Filter",
+                            "warn",
+                            format!("API works (ID {}), but no loopback to verify filtering", filter_id),
                             start,
                         );
                     }
                     Err(err) => {
-                        push_sanity_step(&mut steps, "Periodic Message", "fail", err, start);
+                        push_sanity_step(&mut steps, &app, "Message Filter", "fail", err, start);
                     }
-                }
-            }
-            Err(err) => {
-                push_sanity_step(&mut steps, "Periodic Message", "fail", err, start);
-            }
-        }
-
-        // Add/remove filter
-        let start = Instant::now();
-        let mask = [0u8, 0u8, 0u8, 0u8];
-        let pattern = [0u8, 0u8, 0u8, 0u8];
-        match conn.add_filter(PASS_FILTER, &mask, &pattern, options.extended) {
-            Ok(filter_id) => match conn.remove_filter(filter_id) {
-                Ok(()) => {
-                    push_sanity_step(
-                        &mut steps,
-                        "Message Filter",
-                        "pass",
-                        format!("Added and removed (ID {})", filter_id),
-                        start,
-                    );
-                }
+                },
                 Err(err) => {
-                    push_sanity_step(&mut steps, "Message Filter", "fail", err, start);
+                    push_sanity_step(&mut steps, &app, "Message Filter", "fail", err, start);
                 }
-            },
-            Err(err) => {
-                push_sanity_step(&mut steps, "Message Filter", "fail", err, start);
             }
         }
 
-        // Restore loopback if we enabled it
-        if loopback_set && original_loopback == Some(false) {
+        // Restore loopback to original state if it was originally ON
+        if loopback_supported && original_loopback == Some(true) {
             let start = Instant::now();
-            match conn.set_loopback(false) {
+            match conn.set_loopback(true) {
                 Ok(()) => {
                     push_sanity_step(
                         &mut steps,
+                        &app,
                         "Restore Loopback",
                         "pass",
-                        "Loopback disabled".to_string(),
+                        "Loopback restored to ON".to_string(),
                         start,
                     );
                 }
                 Err(err) => {
-                    push_sanity_step(&mut steps, "Restore Loopback", "warn", err, start);
+                    push_sanity_step(&mut steps, &app, "Restore Loopback", "warn", err, start);
                 }
             }
         }

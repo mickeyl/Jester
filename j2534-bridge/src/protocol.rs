@@ -33,6 +33,9 @@ pub enum Request {
     /// Read messages (with timeout in ms)
     ReadMessages { timeout_ms: u32 },
 
+    /// Read messages including loopback echoes (for sanity testing)
+    ReadMessagesWithLoopback { timeout_ms: u32 },
+
     /// Clear TX and RX buffers
     ClearBuffers,
 

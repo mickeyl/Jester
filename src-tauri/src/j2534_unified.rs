@@ -131,6 +131,23 @@ impl UnifiedConnection {
         }
     }
 
+    /// Read CAN messages including loopback echoes (for sanity testing)
+    pub fn read_messages_with_loopback(&mut self, timeout_ms: u32) -> Result<Vec<CANMessage>, String> {
+        let response = self.bridge.send_request(Request::ReadMessagesWithLoopback { timeout_ms })?;
+        match response {
+            Response::Ok { data: ResponseData::Messages(msgs) } => {
+                Ok(msgs.into_iter().map(|m| CANMessage {
+                    timestamp_us: m.timestamp_us,
+                    arb_id: m.arb_id,
+                    extended: m.extended,
+                    data: m.data,
+                }).collect())
+            }
+            Response::Ok { .. } => Ok(Vec::new()),
+            Response::Error { message, .. } => Err(message),
+        }
+    }
+
     /// Clear TX and RX buffers
     pub fn clear_buffers(&mut self) -> Result<(), String> {
         let response = self.bridge.send_request(Request::ClearBuffers)?;

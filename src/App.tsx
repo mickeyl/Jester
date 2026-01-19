@@ -16,6 +16,7 @@ import type {
   FilterRequest,
   TestResult,
   SanityReport,
+  SanityStepResult,
   SanityOptions,
   SanityStatus,
   ActivePeriodicMessage,
@@ -46,7 +47,7 @@ const STEP_LABELS: Record<string, string> = {
   complete: "Connection Complete",
 };
 
-const SANITY_TEST_ARB_ID = 0x7e0;
+const SANITY_TEST_ARB_ID = 0x7df;
 const SANITY_TEST_DATA = [0x02, 0x01, 0x00, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa];
 
 function formatHex(value: number, digits: number): string {
@@ -181,6 +182,7 @@ function App() {
   const [sanityReport, setSanityReport] = useState<SanityReport | null>(null);
   const [sanityRunning, setSanityRunning] = useState(false);
   const [sanityError, setSanityError] = useState<string | null>(null);
+  const [sanitySteps, setSanitySteps] = useState<SanityStepResult[]>([]);
 
   // Periodic message form
   const [periodicArbId, setPeriodicArbId] = useState("7DF");
@@ -238,6 +240,17 @@ function App() {
       } else if (event.payload.status === "error") {
         setTimeout(() => setShowProgress(false), 2000);
       }
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for sanity step events (progressive disclosure)
+  useEffect(() => {
+    const unlisten = listen<SanityStepResult>("sanity-step", (event) => {
+      setSanitySteps((prev) => [...prev, event.payload]);
     });
 
     return () => {
@@ -669,6 +682,8 @@ function App() {
 
     setSanityError(null);
     setSanityRunning(true);
+    setSanitySteps([]);
+    setSanityReport(null);
 
     try {
       const options: SanityOptions = {
@@ -1072,10 +1087,12 @@ function App() {
             <div>
               <h2>Sanity Suite</h2>
               <p className="sanity-note">
-                Fully-automated checks for core J2534 API calls. Uses standard ID 0x7E0
-                with payload 02 01 00 AA AA AA AA AA to trigger ECU responses when present.
+                Fully-automated checks for core J2534 API calls. Tests loopback echo (guaranteed
+                if driver supports it) and bus response (depends on connected ECU).
               </p>
-              <p className="sanity-note">Missing loopback support is reported as a warning.</p>
+              <p className="sanity-note">
+                Uses broadcast ID 0x7DF with OBD-II PID request. Missing loopback support is reported as a warning.
+              </p>
             </div>
             <div className="sanity-actions">
               <button
@@ -1134,6 +1151,17 @@ function App() {
                 ))}
               </div>
             </>
+          ) : sanitySteps.length > 0 ? (
+            <div className="sanity-results">
+              {sanitySteps.map((step, idx) => (
+                <div key={`${step.name}-${idx}`} className={`result-entry ${step.status}`}>
+                  <span className="result-icon">{sanityStatusIcon(step.status)}</span>
+                  <span className="result-name">{step.name}</span>
+                  <span className="result-message">{step.message}</span>
+                  <span className="result-duration">{step.durationMs}ms</span>
+                </div>
+              ))}
+            </div>
           ) : (
             <div className="empty-state">No sanity report yet</div>
           )}

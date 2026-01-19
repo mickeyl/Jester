@@ -249,6 +249,28 @@ fn handle_request(
             }
         }
 
+        Request::ReadMessagesWithLoopback { timeout_ms } => {
+            let conn_guard = connection.lock().unwrap();
+            match conn_guard.as_ref() {
+                Some(conn) => match conn.read_messages_with_loopback(*timeout_ms) {
+                    Ok(messages) => {
+                        let can_messages: Vec<CanMessage> = messages
+                            .into_iter()
+                            .map(|m| CanMessage {
+                                timestamp_us: m.timestamp_us,
+                                arb_id: m.arb_id,
+                                extended: m.extended,
+                                data: m.data,
+                            })
+                            .collect();
+                        Response::ok(ResponseData::Messages(can_messages))
+                    }
+                    Err(e) => Response::error(-1, e),
+                },
+                None => Response::error(-1, "Not connected"),
+            }
+        }
+
         Request::ClearBuffers => {
             let conn_guard = connection.lock().unwrap();
             match conn_guard.as_ref() {
