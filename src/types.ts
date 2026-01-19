@@ -5,6 +5,8 @@ export interface J2534Device {
   canIso15765: boolean;
   canIso11898: boolean;
   compatible: boolean;
+  bitness: number;  // 32 or 64
+  native: boolean;  // true if loaded directly, false if via bridge
 }
 
 export interface J2534Config {

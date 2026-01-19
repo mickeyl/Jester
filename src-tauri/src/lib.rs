@@ -4,15 +4,21 @@ mod j2534;
 #[cfg(windows)]
 mod bridge_client;
 
+#[cfg(windows)]
+mod j2534_unified;
+
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 #[cfg(windows)]
 use j2534::{
-    CANMessage, ConnectionStatus, J2534Config, J2534Connection, J2534Device,
+    CANMessage, ConnectionStatus, J2534Config,
     J2534VersionInfo, PASS_FILTER, BLOCK_FILTER, FLOW_CONTROL_FILTER,
 };
+
+#[cfg(windows)]
+use j2534_unified::{UnifiedConnection, J2534DeviceExt};
 
 #[cfg(not(windows))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +30,20 @@ pub struct J2534Device {
     pub can_iso15765: bool,
     pub can_iso11898: bool,
     pub compatible: bool,
+}
+
+#[cfg(not(windows))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct J2534DeviceExt {
+    pub name: String,
+    pub vendor: String,
+    pub dll_path: String,
+    pub can_iso15765: bool,
+    pub can_iso11898: bool,
+    pub compatible: bool,
+    pub bitness: u8,
+    pub native: bool,
 }
 
 #[cfg(not(windows))]
@@ -117,7 +137,9 @@ pub struct ConfigRequest {
 
 pub struct AppState {
     #[cfg(windows)]
-    connection: Arc<Mutex<Option<J2534Connection>>>,
+    connection: Arc<Mutex<Option<UnifiedConnection>>>,
+    #[cfg(windows)]
+    devices: Arc<Mutex<Vec<J2534DeviceExt>>>,
     #[cfg(windows)]
     messages_sent: Arc<Mutex<u64>>,
     #[cfg(windows)]
@@ -133,6 +155,8 @@ impl Default for AppState {
         Self {
             #[cfg(windows)]
             connection: Arc::new(Mutex::new(None)),
+            #[cfg(windows)]
+            devices: Arc::new(Mutex::new(Vec::new())),
             #[cfg(windows)]
             messages_sent: Arc::new(Mutex::new(0)),
             #[cfg(windows)]
@@ -154,13 +178,16 @@ fn get_platform_info() -> PlatformInfo {
 }
 
 #[tauri::command]
-fn j2534_enumerate_devices() -> Vec<J2534Device> {
+fn j2534_enumerate_devices(state: State<'_, AppState>) -> Vec<J2534DeviceExt> {
     #[cfg(windows)]
     {
-        j2534::enumerate_devices()
+        let devices = UnifiedConnection::enumerate_devices();
+        *state.devices.lock().unwrap() = devices.clone();
+        devices
     }
     #[cfg(not(windows))]
     {
+        let _ = state;
         Vec::new()
     }
 }
@@ -174,15 +201,13 @@ async fn j2534_connect(
     #[cfg(windows)]
     {
         // Find the device by name
-        let devices = j2534::enumerate_devices();
+        let devices = state.devices.lock().unwrap();
         let device = devices
             .iter()
             .find(|d| d.name == config.device_name)
-            .ok_or_else(|| format!("ERR_J2534_DEVICE_NOT_FOUND: {}", config.device_name))?;
-
-        if !device.compatible {
-            return Err("ERR_J2534_INCOMPATIBLE: Device DLL is not compatible with this process architecture".to_string());
-        }
+            .ok_or_else(|| format!("ERR_J2534_DEVICE_NOT_FOUND: {}", config.device_name))?
+            .clone();
+        drop(devices);
 
         let dll_path = device.dll_path.clone();
         let baud_rate = config.baud_rate;
@@ -191,7 +216,7 @@ async fn j2534_connect(
         // Create a channel for progress updates
         let app_handle = app.clone();
 
-        let connection = J2534Connection::open(&dll_path, baud_rate, use_extended_id, |progress| {
+        let connection = UnifiedConnection::open(&dll_path, baud_rate, use_extended_id, move |progress| {
             let _ = app_handle.emit("j2534-progress", progress);
         })?;
 
@@ -265,9 +290,9 @@ async fn j2534_send_message(
 ) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.send_message(request.arb_id, &request.data, request.extended)?;
@@ -292,9 +317,9 @@ async fn j2534_read_messages(
 ) -> Result<Vec<CANMessage>, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         let messages = conn.read_messages(timeout_ms)?;
@@ -317,9 +342,9 @@ async fn j2534_read_messages(
 async fn j2534_clear_buffers(state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.clear_buffers()
@@ -336,9 +361,9 @@ async fn j2534_clear_buffers(state: State<'_, AppState>) -> Result<(), String> {
 async fn j2534_read_version(state: State<'_, AppState>) -> Result<J2534VersionInfo, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.read_version()
@@ -355,9 +380,9 @@ async fn j2534_read_version(state: State<'_, AppState>) -> Result<J2534VersionIn
 async fn j2534_get_last_error(state: State<'_, AppState>) -> Result<String, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.get_last_error()
@@ -374,9 +399,9 @@ async fn j2534_get_last_error(state: State<'_, AppState>) -> Result<String, Stri
 async fn j2534_read_battery_voltage(state: State<'_, AppState>) -> Result<f64, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.read_battery_voltage()
@@ -393,9 +418,9 @@ async fn j2534_read_battery_voltage(state: State<'_, AppState>) -> Result<f64, S
 async fn j2534_read_programming_voltage(state: State<'_, AppState>) -> Result<f64, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.read_programming_voltage()
@@ -415,9 +440,9 @@ async fn j2534_start_periodic_message(
 ) -> Result<u32, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.start_periodic_message(request.arb_id, &request.data, request.interval_ms, request.extended)
@@ -434,9 +459,9 @@ async fn j2534_start_periodic_message(
 async fn j2534_stop_periodic_message(msg_id: u32, state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.stop_periodic_message(msg_id)
@@ -453,9 +478,9 @@ async fn j2534_stop_periodic_message(msg_id: u32, state: State<'_, AppState>) ->
 async fn j2534_clear_periodic_messages(state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.clear_periodic_messages()
@@ -479,9 +504,9 @@ async fn j2534_add_filter(request: FilterRequest, state: State<'_, AppState>) ->
             _ => return Err("ERR_INVALID_FILTER_TYPE: Must be 'pass', 'block', or 'flow_control'".to_string()),
         };
 
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.add_filter(filter_type, &request.mask, &request.pattern, request.extended)
@@ -498,9 +523,9 @@ async fn j2534_add_filter(request: FilterRequest, state: State<'_, AppState>) ->
 async fn j2534_remove_filter(filter_id: u32, state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.remove_filter(filter_id)
@@ -517,9 +542,9 @@ async fn j2534_remove_filter(filter_id: u32, state: State<'_, AppState>) -> Resu
 async fn j2534_clear_filters(state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.clear_filters()
@@ -536,9 +561,9 @@ async fn j2534_clear_filters(state: State<'_, AppState>) -> Result<(), String> {
 async fn j2534_get_config(parameter: u32, state: State<'_, AppState>) -> Result<u32, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.get_config(parameter)
@@ -555,9 +580,9 @@ async fn j2534_get_config(parameter: u32, state: State<'_, AppState>) -> Result<
 async fn j2534_set_config(parameter: u32, value: u32, state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.set_config(parameter, value)
@@ -574,9 +599,9 @@ async fn j2534_set_config(parameter: u32, value: u32, state: State<'_, AppState>
 async fn j2534_get_loopback(state: State<'_, AppState>) -> Result<bool, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.get_loopback()
@@ -593,9 +618,9 @@ async fn j2534_get_loopback(state: State<'_, AppState>) -> Result<bool, String> 
 async fn j2534_set_loopback(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.set_loopback(enabled)
@@ -612,9 +637,9 @@ async fn j2534_set_loopback(enabled: bool, state: State<'_, AppState>) -> Result
 async fn j2534_get_data_rate(state: State<'_, AppState>) -> Result<u32, String> {
     #[cfg(windows)]
     {
-        let connection = state.connection.lock().unwrap();
+        let mut connection = state.connection.lock().unwrap();
         let conn = connection
-            .as_ref()
+            .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         conn.get_data_rate()

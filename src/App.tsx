@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   J2534Device,
   J2534Config,
@@ -143,6 +144,14 @@ function App() {
     invoke<PlatformInfo>("get_platform_info").then(setPlatformInfo);
     refreshDevices();
   }, []);
+
+  // Set window title with bitness
+  useEffect(() => {
+    if (platformInfo) {
+      const bits = platformInfo.arch === "x86_64" ? "64" : "32";
+      getCurrentWindow().setTitle(`Jester [${bits}-bit]`);
+    }
+  }, [platformInfo]);
 
   // Listen for progress events
   useEffect(() => {
@@ -301,10 +310,8 @@ function App() {
       const deviceList = await invoke<J2534Device[]>("j2534_enumerate_devices");
       setDevices(deviceList);
       if (deviceList.length > 0 && !selectedDevice) {
-        const compatible = deviceList.find((d) => d.compatible);
-        if (compatible) {
-          setSelectedDevice(compatible.name);
-        }
+        // Auto-select first device
+        setSelectedDevice(deviceList[0].name);
       }
     } catch (err) {
       console.error("Failed to enumerate devices:", err);
@@ -625,9 +632,8 @@ function App() {
                 <option
                   key={device.dllPath}
                   value={device.name}
-                  disabled={!device.compatible}
                 >
-                  {device.name} ({device.vendor})
+                  {device.name} ({device.vendor}) [{device.bitness}-bit{device.native ? "" : ", bridged"}]
                 </option>
               ))}
             </select>
