@@ -21,6 +21,10 @@ import type {
   SanityStatus,
   ActivePeriodicMessage,
   ActiveFilter,
+  BatchTestResult,
+  BatchTestSummary,
+  BatchSendRequest,
+  BatchSendResult,
 } from "./types";
 import { J2534ConfigParams, J2534ConfigParamNames } from "./types";
 import type { J2534Protocol } from "./types";
@@ -36,7 +40,7 @@ interface LogEntry {
   deviceTimestampUs?: number; // J2534 device timestamp in microseconds (RX only)
 }
 
-type TabType = "messages" | "device-info" | "sanity" | "api-test";
+type TabType = "messages" | "device-info" | "sanity" | "api-test" | "batch-test";
 
 const STEP_LABELS: Record<string, string> = {
   load_dll: "Load J2534 DLL",
@@ -201,8 +205,43 @@ function App() {
   const [configValue, setConfigValue] = useState("");
   const [configReadValue, setConfigReadValue] = useState<number | null>(null);
 
-  // About dialog - show on first launch
-  const [showAbout, setShowAbout] = useState(true);
+  // About dialog - false by default (user can open via ? button)
+  const [showAbout, setShowAbout] = useState(false);
+  const [aboutAutoOpened, setAboutAutoOpened] = useState(false);
+
+  // Show about dialog once per day, auto-close after 2.5s
+  useEffect(() => {
+    const lastShown = localStorage.getItem("jester-about-last-shown");
+    const today = new Date().toDateString();
+    if (lastShown !== today) {
+      localStorage.setItem("jester-about-last-shown", today);
+      setShowAbout(true);
+      setAboutAutoOpened(true);
+    }
+  }, []);
+
+  // Auto-close about dialog after 2.5s if auto-opened
+  useEffect(() => {
+    if (showAbout && aboutAutoOpened) {
+      const timer = setTimeout(() => {
+        setShowAbout(false);
+        setAboutAutoOpened(false);
+      }, 2500);
+      return () => clearTimeout(timer);
+    }
+  }, [showAbout, aboutAutoOpened]);
+
+  // Batch test state
+  const [batchArbId, setBatchArbId] = useState("7E0");
+  const [batchCount, setBatchCount] = useState(100);
+  const [batchInterval, setBatchInterval] = useState(10);
+  const [batchExtended, setBatchExtended] = useState(false);
+  const [batchPayloadSize, setBatchPayloadSize] = useState(6);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchResults, setBatchResults] = useState<Map<number, BatchTestResult>>(new Map());
+  const [batchSummary, setBatchSummary] = useState<BatchTestSummary | null>(null);
+  const [batchProgress, setBatchProgress] = useState(0);
+  const batchAbortRef = useRef(false);
 
   // Load platform info and devices on mount
   useEffect(() => {
@@ -280,7 +319,7 @@ function App() {
 
   // Polling for messages when connected
   useEffect(() => {
-    if (status.connected && !sanityRunning) {
+    if (status.connected && !sanityRunning && !batchRunning) {
       const poll = async () => {
         try {
           const messages = await invoke<CANMessage[]>("j2534_read_messages", {
@@ -328,7 +367,7 @@ function App() {
         }
       };
     }
-  }, [status.connected, sanityRunning]);
+  }, [status.connected, sanityRunning, batchRunning]);
 
   // Fetch device info when connected
   useEffect(() => {
@@ -730,6 +769,167 @@ function App() {
     }
   }, [sanityReport]);
 
+  // Batch test handlers
+  const handleRunBatchTest = useCallback(async () => {
+    if (!status.connected || batchRunning) return;
+
+    const arbId = parseInt(batchArbId, 16);
+    if (isNaN(arbId)) {
+      setError("Invalid arbitration ID");
+      return;
+    }
+
+    // Enable loopback for the test
+    try {
+      await invoke("j2534_set_loopback", { enabled: true });
+    } catch (err) {
+      setError(`Failed to enable loopback: ${err}`);
+      return;
+    }
+
+    setError(null);
+    setBatchRunning(true);
+    setBatchResults(new Map());
+    setBatchSummary(null);
+    setBatchProgress(0);
+    batchAbortRef.current = false;
+
+    const results = new Map<number, BatchTestResult>();
+    const startTime = Date.now();
+
+    // Build all messages upfront
+    const messages: SendMessageRequest[] = [];
+    for (let seq = 0; seq < batchCount; seq++) {
+      // Build message data: 2-byte sequence number (big endian) + padding
+      const data: number[] = [
+        (seq >> 8) & 0xff,
+        seq & 0xff,
+      ];
+      // Add padding bytes
+      for (let i = 0; i < batchPayloadSize; i++) {
+        data.push((seq + i) & 0xff);
+      }
+
+      messages.push({
+        arbId,
+        data,
+        extended: batchExtended,
+      });
+
+      // Initialize result tracking
+      results.set(seq, {
+        sequenceNumber: seq,
+        sent: false,
+        received: false,
+      });
+    }
+
+    setBatchProgress(10);
+
+    // Send ALL messages in a single PassThruWriteMsgs call
+    let numSent = 0;
+    const sendTime = Date.now();
+    try {
+      const request: BatchSendRequest = { messages };
+      const result = await invoke<BatchSendResult>("j2534_send_messages_batch", { request });
+      numSent = result.sent;
+
+      // Mark sent messages
+      for (let seq = 0; seq < numSent; seq++) {
+        const r = results.get(seq);
+        if (r) {
+          r.sent = true;
+          r.sentAt = sendTime;
+          results.set(seq, r);
+        }
+      }
+
+      console.log(`Batch send: requested=${result.requested}, sent=${result.sent}`);
+    } catch (err) {
+      setError(`Batch send failed: ${err}`);
+      console.error("Batch send error:", err);
+    }
+
+    setBatchProgress(50);
+
+    // Wait for responses - poll for a bit after sending
+    const pollEndTime = Date.now() + Math.max(1000, batchCount * 5);
+
+    while (Date.now() < pollEndTime && !batchAbortRef.current) {
+        try {
+          const messages = await invoke<CANMessage[]>("j2534_read_messages_with_loopback", {
+            timeoutMs: 50,
+          });
+
+        for (const msg of messages) {
+          // Check if this is one of our messages (loopback)
+          if (msg.arbId === arbId && msg.data.length >= 2) {
+            const seq = (msg.data[0] << 8) | msg.data[1];
+            if (seq >= 0 && seq < batchCount) {
+              const existing = results.get(seq);
+              if (existing && !existing.received) {
+                existing.received = true;
+                existing.receivedAt = Date.now();
+                if (existing.sentAt) {
+                  existing.roundTripMs = existing.receivedAt - existing.sentAt;
+                }
+                results.set(seq, existing);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // Ignore buffer empty errors
+        const errStr = String(err);
+        if (!errStr.includes("ERR_BUFFER_EMPTY")) {
+          console.error("Read error during batch:", err);
+        }
+      }
+
+      setBatchProgress(50 + ((Date.now() - startTime) / (pollEndTime - startTime + batchCount * batchInterval)) * 50);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    // Calculate summary
+    let totalSent = 0;
+    let totalReceived = 0;
+    const roundTrips: number[] = [];
+
+    results.forEach((r) => {
+      if (r.sent) totalSent++;
+      if (r.received) totalReceived++;
+      if (r.roundTripMs !== undefined) roundTrips.push(r.roundTripMs);
+    });
+
+    const summary: BatchTestSummary = {
+      totalSent,
+      totalReceived,
+      lostCount: totalSent - totalReceived,
+      lossPercent: totalSent > 0 ? ((totalSent - totalReceived) / totalSent) * 100 : 0,
+    };
+
+    if (roundTrips.length > 0) {
+      summary.minRoundTripMs = Math.min(...roundTrips);
+      summary.maxRoundTripMs = Math.max(...roundTrips);
+      summary.avgRoundTripMs = roundTrips.reduce((a, b) => a + b, 0) / roundTrips.length;
+    }
+
+    setBatchResults(new Map(results));
+    setBatchSummary(summary);
+    setBatchProgress(100);
+    setBatchRunning(false);
+  }, [status.connected, batchRunning, batchArbId, batchCount, batchInterval, batchExtended, batchPayloadSize]);
+
+  const handleAbortBatchTest = useCallback(() => {
+    batchAbortRef.current = true;
+  }, []);
+
+  const handleClearBatchResults = useCallback(() => {
+    setBatchResults(new Map());
+    setBatchSummary(null);
+    setBatchProgress(0);
+  }, []);
+
   const isWindows = platformInfo?.platform === "windows";
   const sanitySummary = sanityReport ? summarizeSanity(sanityReport) : null;
 
@@ -739,7 +939,7 @@ function App() {
       <div className="connection-panel">
         <div className="panel-header">
           <h2>J2534 Connection</h2>
-          <button className="about-btn" onClick={() => setShowAbout(true)} title="About Jester">?</button>
+          <button className="about-btn" onClick={() => { setShowAbout(true); setAboutAutoOpened(false); }} title="About Jester">?</button>
         </div>
 
         {error && <div className="error-message">{error}</div>}
@@ -878,6 +1078,12 @@ function App() {
               onClick={() => setActiveTab("api-test")}
             >
               API Testing
+            </button>
+            <button
+              className={`tab ${activeTab === "batch-test" ? "active" : ""}`}
+              onClick={() => setActiveTab("batch-test")}
+            >
+              Batch Test
             </button>
           </div>
 
@@ -1407,6 +1613,173 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Batch Test Tab */}
+      {activeTab === "batch-test" && (
+        <div className="batch-test-panel">
+          <div className="batch-test-header">
+            <div>
+              <h2>Batch Message Test</h2>
+              <p className="batch-note">
+                Send a configurable number of messages with sequence numbers to verify message
+                delivery reliability. Uses loopback mode to track which messages are received back.
+              </p>
+            </div>
+          </div>
+
+          <div className="batch-test-config">
+            <h3>Configuration</h3>
+            <div className="batch-form-grid">
+              <div className="form-group">
+                <label>Base Arb ID (hex)</label>
+                <input
+                  type="text"
+                  value={batchArbId}
+                  onChange={(e) => setBatchArbId(e.target.value)}
+                  placeholder="7E0"
+                  disabled={batchRunning}
+                  style={{ width: "100px" }}
+                />
+              </div>
+              <div className="form-group">
+                <label>Message Count</label>
+                <input
+                  type="number"
+                  value={batchCount}
+                  onChange={(e) => setBatchCount(Math.max(1, Math.min(10000, Number(e.target.value))))}
+                  min={1}
+                  max={10000}
+                  disabled={batchRunning}
+                  style={{ width: "100px" }}
+                />
+              </div>
+              <div className="form-group">
+                <label>Interval (ms)</label>
+                <input
+                  type="number"
+                  value={batchInterval}
+                  onChange={(e) => setBatchInterval(Math.max(0, Math.min(1000, Number(e.target.value))))}
+                  min={0}
+                  max={1000}
+                  disabled={batchRunning}
+                  style={{ width: "80px" }}
+                />
+              </div>
+              <div className="form-group">
+                <label>Payload Size</label>
+                <select
+                  value={batchPayloadSize}
+                  onChange={(e) => setBatchPayloadSize(Number(e.target.value))}
+                  disabled={batchRunning}
+                >
+                  <option value={1}>3 bytes (seq + 1)</option>
+                  <option value={2}>4 bytes (seq + 2)</option>
+                  <option value={4}>6 bytes (seq + 4)</option>
+                  <option value={6}>8 bytes (seq + 6)</option>
+                </select>
+              </div>
+              <div className="checkbox-group">
+                <input
+                  type="checkbox"
+                  id="batchExtended"
+                  checked={batchExtended}
+                  onChange={(e) => setBatchExtended(e.target.checked)}
+                  disabled={batchRunning}
+                />
+                <label htmlFor="batchExtended">Extended ID (29-bit)</label>
+              </div>
+            </div>
+
+            <div className="batch-actions">
+              {!batchRunning ? (
+                <button
+                  className="primary"
+                  onClick={handleRunBatchTest}
+                  disabled={!status.connected}
+                >
+                  Run Batch Test
+                </button>
+              ) : (
+                <button className="danger" onClick={handleAbortBatchTest}>
+                  Abort
+                </button>
+              )}
+              <button
+                className="secondary"
+                onClick={handleClearBatchResults}
+                disabled={batchRunning || batchResults.size === 0}
+              >
+                Clear Results
+              </button>
+            </div>
+
+            {batchRunning && (
+              <div className="batch-progress">
+                <div className="progress-bar">
+                  <div
+                    className="progress-fill"
+                    style={{ width: `${batchProgress}%` }}
+                  />
+                </div>
+                <span className="progress-text">{Math.round(batchProgress)}%</span>
+              </div>
+            )}
+          </div>
+
+          {batchSummary && (
+            <div className="batch-summary">
+              <h3>Results Summary</h3>
+              <div className="summary-grid">
+                <div className={`summary-card ${batchSummary.lostCount === 0 ? "success" : "warning"}`}>
+                  <div className="summary-label">Messages Sent</div>
+                  <div className="summary-value">{batchSummary.totalSent}</div>
+                </div>
+                <div className={`summary-card ${batchSummary.lostCount === 0 ? "success" : "warning"}`}>
+                  <div className="summary-label">Messages Received</div>
+                  <div className="summary-value">{batchSummary.totalReceived}</div>
+                </div>
+                <div className={`summary-card ${batchSummary.lostCount === 0 ? "success" : "error"}`}>
+                  <div className="summary-label">Lost</div>
+                  <div className="summary-value">
+                    {batchSummary.lostCount} ({batchSummary.lossPercent.toFixed(1)}%)
+                  </div>
+                </div>
+                {batchSummary.avgRoundTripMs !== undefined && (
+                  <div className="summary-card">
+                    <div className="summary-label">Round Trip (ms)</div>
+                    <div className="summary-value">
+                      {batchSummary.minRoundTripMs?.toFixed(0)} / {batchSummary.avgRoundTripMs.toFixed(1)} / {batchSummary.maxRoundTripMs?.toFixed(0)}
+                    </div>
+                    <div className="summary-subvalue">min / avg / max</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {batchResults.size > 0 && (
+            <div className="batch-results">
+              <h3>Sequence Details</h3>
+              <div className="sequence-grid">
+                {Array.from(batchResults.entries()).map(([seq, result]) => (
+                  <div
+                    key={seq}
+                    className={`sequence-cell ${result.received ? "received" : result.sent ? "lost" : "failed"}`}
+                    title={`Seq ${seq}: ${result.received ? "OK" : result.sent ? "Lost" : "Send Failed"}${result.roundTripMs ? ` (${result.roundTripMs}ms)` : ""}`}
+                  >
+                    {seq}
+                  </div>
+                ))}
+              </div>
+              <div className="sequence-legend">
+                <span className="legend-item"><span className="legend-color received" /> Received</span>
+                <span className="legend-item"><span className="legend-color lost" /> Lost</span>
+                <span className="legend-item"><span className="legend-color failed" /> Send Failed</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
         </>
       )}
 
@@ -1476,9 +1849,11 @@ function App() {
                 with vehicle diagnostics.
               </p>
             </div>
-            <div className="about-footer">
-              <button className="primary" onClick={() => setShowAbout(false)}>Close</button>
-            </div>
+            {!aboutAutoOpened && (
+              <div className="about-footer">
+                <button className="primary" onClick={() => setShowAbout(false)}>Close</button>
+              </div>
+            )}
           </div>
         </div>
       )}

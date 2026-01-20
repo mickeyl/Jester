@@ -18,6 +18,7 @@ Jester is a diagnostic tool for testing and validating J2534 PassThru devices an
 - Configure protocol parameters (baud rate, loopback, etc.)
 - Supports both standard (11-bit) and extended (29-bit) CAN IDs
 - Works with USB and WiFi-based J2534 adapters
+- Batch test pauses live polling to avoid consuming loopback echoes
 
 ## Requirements
 
@@ -64,6 +65,7 @@ make build64   # or make build32
 5. Use the **Messages** tab to send and receive CAN frames
 6. Use **Device Info** to view adapter details and voltage readings
 7. Use **API Testing** to test periodic messages, filters, and configuration parameters
+8. Use **Batch Test** for high-volume loopback checks (live log polling pauses automatically)
 
 ## License
 

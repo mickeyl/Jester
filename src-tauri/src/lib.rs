@@ -106,6 +106,19 @@ pub struct SendMessageRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BatchSendRequest {
+    pub messages: Vec<SendMessageRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchSendResult {
+    pub requested: u32,
+    pub sent: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlatformInfo {
     pub platform: String,
     pub arch: String,
@@ -372,6 +385,42 @@ async fn j2534_send_message(
 }
 
 #[tauri::command]
+async fn j2534_send_messages_batch(
+    request: BatchSendRequest,
+    state: State<'_, AppState>,
+) -> Result<BatchSendResult, String> {
+    #[cfg(windows)]
+    {
+        let mut connection = state.connection.lock().unwrap();
+        let conn = connection
+            .as_mut()
+            .ok_or("ERR_NOT_CONNECTED: No active connection")?;
+
+        let requested = request.messages.len() as u32;
+
+        // Convert to tuple format
+        let messages: Vec<(u32, Vec<u8>, bool)> = request
+            .messages
+            .into_iter()
+            .map(|m| (m.arb_id, m.data, m.extended))
+            .collect();
+
+        let sent = conn.send_messages_batch(messages)?;
+
+        drop(connection);
+        *state.messages_sent.lock().unwrap() += sent as u64;
+
+        Ok(BatchSendResult { requested, sent })
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (request, state);
+        Err("ERR_J2534_NOT_SUPPORTED: J2534 is only supported on Windows".to_string())
+    }
+}
+
+#[tauri::command]
 async fn j2534_read_messages(
     timeout_ms: u32,
     state: State<'_, AppState>,
@@ -384,6 +433,34 @@ async fn j2534_read_messages(
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
         let messages = conn.read_messages(timeout_ms)?;
+        let count = messages.len() as u64;
+
+        drop(connection);
+        *state.messages_received.lock().unwrap() += count;
+
+        Ok(messages)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (timeout_ms, state);
+        Err("ERR_J2534_NOT_SUPPORTED: J2534 is only supported on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+async fn j2534_read_messages_with_loopback(
+    timeout_ms: u32,
+    state: State<'_, AppState>,
+) -> Result<Vec<CANMessage>, String> {
+    #[cfg(windows)]
+    {
+        let mut connection = state.connection.lock().unwrap();
+        let conn = connection
+            .as_mut()
+            .ok_or("ERR_NOT_CONNECTED: No active connection")?;
+
+        let messages = conn.read_messages_with_loopback(timeout_ms)?;
         let count = messages.len() as u64;
 
         drop(connection);
@@ -1110,8 +1187,8 @@ async fn j2534_run_sanity_suite(
                                 &mut steps,
                                 &app,
                                 "Periodic Message",
-                                "fail",
-                                "No periodic messages received despite loopback".to_string(),
+                                "warn",
+                                "No periodic messages received; device may not echo periodic traffic".to_string(),
                                 start,
                             );
                         }
@@ -1357,7 +1434,9 @@ pub fn run() {
             j2534_disconnect,
             j2534_get_status,
             j2534_send_message,
+            j2534_send_messages_batch,
             j2534_read_messages,
+            j2534_read_messages_with_loopback,
             j2534_clear_buffers,
             j2534_read_version,
             j2534_get_last_error,
