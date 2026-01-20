@@ -11,6 +11,7 @@ mod protocol;
 
 use protocol::{CanMessage, DeviceInfo, Message, Request, Response, ResponseData, VersionInfo};
 use std::io::{BufRead, BufReader, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 #[cfg(windows)]
@@ -129,8 +130,27 @@ fn message_loop(pipe: std::fs::File) -> Result<(), Box<dyn std::error::Error>> {
 
         eprintln!("[bridge] Request {}: {:?}", msg.id, msg.payload);
 
-        // Handle the request
-        let response_payload = handle_request(&msg.payload, &connection);
+        // Handle the request with panic catching to prevent silent bridge death
+        let response_payload = {
+            let conn = Arc::clone(&connection);
+            let request = msg.payload.clone();
+            match panic::catch_unwind(AssertUnwindSafe(|| {
+                handle_request(&request, &conn)
+            })) {
+                Ok(response) => response,
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown panic".to_string()
+                    };
+                    eprintln!("[bridge] PANIC while handling request: {}", panic_msg);
+                    Response::error(-999, format!("J2534 DLL caused panic: {}", panic_msg))
+                }
+            }
+        };
 
         let response = Message {
             id: msg.id,
@@ -223,6 +243,24 @@ fn handle_request(
                     Ok(()) => Response::ok_none(),
                     Err(e) => Response::error(-1, e),
                 },
+                None => Response::error(-1, "Not connected"),
+            }
+        }
+
+        Request::SendMessagesBatch { messages } => {
+            let conn_guard = connection.lock().unwrap();
+            match conn_guard.as_ref() {
+                Some(conn) => {
+                    // Convert BatchMessage to tuple format expected by send_messages_batch
+                    let msg_tuples: Vec<(u32, Vec<u8>, bool)> = messages
+                        .iter()
+                        .map(|m| (m.arb_id, m.data.clone(), m.extended))
+                        .collect();
+                    match conn.send_messages_batch(&msg_tuples) {
+                        Ok(num_sent) => Response::ok(ResponseData::Number(num_sent)),
+                        Err(e) => Response::error(-1, e),
+                    }
+                }
                 None => Response::error(-1, "Not connected"),
             }
         }

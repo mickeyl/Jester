@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "Bash(npx tsc:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nEnhance sanity tests with functional verification and progressive UI\n\n- Add loopback echo test \\(guaranteed pass if driver supports loopback\\)\n- Add bus response test \\(depends on connected ECU\\)\n- Periodic message test now verifies messages appear via loopback\n- Filter test verifies filtering works by sending matching/non-matching IDs\n- Sanity results display progressively as each step completes\n- Make sanity report panel scrollable\n- Use broadcast ID 0x7DF for OBD-II requests\nEOF\n\\)\")",
+      "Bash(git push:*)"
+    ]
+  }
+}

@@ -30,6 +30,12 @@ pub enum Request {
         extended: bool,
     },
 
+    /// Send multiple CAN messages in a single PassThruWriteMsgs call
+    /// Each message is (arb_id, data, extended)
+    SendMessagesBatch {
+        messages: Vec<BatchMessage>,
+    },
+
     /// Read messages (with timeout in ms)
     ReadMessages { timeout_ms: u32 },
 
@@ -164,6 +170,15 @@ pub struct CanMessage {
     pub arb_id: u32,
     pub extended: bool,
     pub data: Vec<u8>,
+}
+
+/// Message for batch sending
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchMessage {
+    pub arb_id: u32,
+    pub data: Vec<u8>,
+    pub extended: bool,
 }
 
 /// Version information

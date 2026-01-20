@@ -28,6 +28,9 @@ pub enum Request {
         data: Vec<u8>,
         extended: bool,
     },
+    SendMessagesBatch {
+        messages: Vec<BatchMessage>,
+    },
     ReadMessages {
         timeout_ms: u32,
     },
@@ -120,6 +123,15 @@ pub struct CanMessage {
     pub arb_id: u32,
     pub extended: bool,
     pub data: Vec<u8>,
+}
+
+/// Message for batch sending
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchMessage {
+    pub arb_id: u32,
+    pub data: Vec<u8>,
+    pub extended: bool,
 }
 
 /// Version information
@@ -309,6 +321,8 @@ impl BridgeClient {
 
     /// Send a request and wait for the response
     pub fn send_request(&mut self, request: Request) -> Result<Response, String> {
+        let request_debug = format!("{:?}", request);
+
         let writer = self.writer.as_mut()
             .ok_or("Bridge not connected")?;
         let reader = self.reader.as_mut()
@@ -330,17 +344,51 @@ impl BridgeClient {
 
         // Read response
         let mut line = String::new();
-        reader.read_line(&mut line)
+        let bytes_read = reader.read_line(&mut line)
             .map_err(|e| format!("Failed to read from pipe: {}", e))?;
 
+        // Check if pipe was closed (bridge process died)
+        if bytes_read == 0 || line.trim().is_empty() {
+            // Check if bridge process is still running
+            let bridge_status = self.check_bridge_status();
+            return Err(format!(
+                "Bridge process died while handling request: {}. {}",
+                request_debug,
+                bridge_status
+            ));
+        }
+
         let response: Message<Response> = serde_json::from_str(&line)
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
+            .map_err(|e| format!(
+                "Failed to parse bridge response: {}. Raw response: {:?}",
+                e,
+                if line.len() > 200 { &line[..200] } else { &line }
+            ))?;
 
         if response.id != id {
             return Err(format!("Response ID mismatch: expected {}, got {}", id, response.id));
         }
 
         Ok(response.payload)
+    }
+
+    /// Check if the bridge process is still running and return status info
+    fn check_bridge_status(&mut self) -> String {
+        if let Some(ref mut child) = self.process {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    format!("Bridge exited with status: {}. The J2534 DLL may have crashed.", status)
+                }
+                Ok(None) => {
+                    "Bridge process still running but pipe closed unexpectedly.".to_string()
+                }
+                Err(e) => {
+                    format!("Could not check bridge status: {}", e)
+                }
+            }
+        } else {
+            "Bridge process handle not available.".to_string()
+        }
     }
 
     /// Check if the bridge is running

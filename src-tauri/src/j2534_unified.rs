@@ -5,7 +5,7 @@
 //! - Cross-bitness support (64-bit app can use 32-bit DLLs and vice versa)
 //! - Consistent behavior regardless of DLL architecture
 
-use crate::bridge_client::{BridgeClient, Request, Response, ResponseData};
+use crate::bridge_client::{BatchMessage, BridgeClient, Request, Response, ResponseData};
 use crate::j2534::{self, CANMessage, J2534Progress, J2534VersionInfo};
 
 /// Extended device info that includes bitness
@@ -110,6 +110,25 @@ impl UnifiedConnection {
         })?;
         match response {
             Response::Ok { .. } => Ok(()),
+            Response::Error { message, .. } => Err(message),
+        }
+    }
+
+    /// Send multiple CAN messages in a single PassThruWriteMsgs call
+    /// Returns the number of messages actually sent
+    pub fn send_messages_batch(&mut self, messages: Vec<(u32, Vec<u8>, bool)>) -> Result<u32, String> {
+        let batch_messages: Vec<BatchMessage> = messages
+            .into_iter()
+            .map(|(arb_id, data, extended)| BatchMessage { arb_id, data, extended })
+            .collect();
+
+        let response = self.bridge.send_request(Request::SendMessagesBatch {
+            messages: batch_messages,
+        })?;
+
+        match response {
+            Response::Ok { data: ResponseData::Number(n) } => Ok(n),
+            Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
     }

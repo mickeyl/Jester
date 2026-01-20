@@ -747,6 +747,67 @@ impl J2534Connection {
         Ok(())
     }
 
+    /// Send multiple CAN messages in a single PassThruWriteMsgs call
+    /// Returns the number of messages actually sent
+    pub fn send_messages_batch(&self, messages: &[(u32, Vec<u8>, bool)]) -> Result<u32, String> {
+        if messages.is_empty() {
+            return Ok(0);
+        }
+
+        // Build array of PassThruMsg
+        let mut msg_buffer: Vec<PassThruMsg> = messages.iter().map(|(arb_id, data, extended)| {
+            let mut msg = PassThruMsg::default();
+            msg.protocol_id = self.protocol_id;
+            msg.tx_flags = if *extended { CAN_29BIT_ID } else { 0 };
+
+            // First 4 bytes are the CAN ID
+            msg.data[0] = ((arb_id >> 24) & 0xFF) as u8;
+            msg.data[1] = ((arb_id >> 16) & 0xFF) as u8;
+            msg.data[2] = ((arb_id >> 8) & 0xFF) as u8;
+            msg.data[3] = (arb_id & 0xFF) as u8;
+
+            // Copy data bytes (CAN limited to 8 bytes)
+            let data_len = data.len().min(8);
+            msg.data[4..4 + data_len].copy_from_slice(&data[..data_len]);
+            msg.data_size = (4 + data_len) as u32;
+
+            msg
+        }).collect();
+
+        let mut num_msgs: c_ulong = msg_buffer.len() as c_ulong;
+
+        unsafe {
+            let write_fn: Symbol<PassThruWriteMsgsFn> = self.library
+                .get(b"PassThruWriteMsgs\0")
+                .map_err(|e| format!("ERR_J2534_FUNC_NOT_FOUND: PassThruWriteMsgs - {}", e))?;
+
+            // Use a longer timeout for batch sends
+            let timeout = 5000u32.max(messages.len() as u32 * 10);
+            let result = write_fn(self.channel_id, msg_buffer.as_mut_ptr(), &mut num_msgs, timeout);
+            if result != STATUS_NOERROR {
+                return Err(format!("ERR_J2534_WRITE_FAILED: error code {} ({}), sent {}/{} messages",
+                    result, error_code_to_string(result), num_msgs, messages.len()));
+            }
+        }
+
+        // Track sent messages for TX echo filtering (driver workaround)
+        if let Ok(mut sent) = self.sent_messages.lock() {
+            let cutoff = std::time::Instant::now() - std::time::Duration::from_millis(500);
+            sent.retain(|m| m.timestamp > cutoff);
+
+            for (arb_id, data, _) in messages.iter().take(num_msgs as usize) {
+                let data_len = data.len().min(8);
+                sent.push(SentMessage {
+                    arb_id: *arb_id,
+                    data: data[..data_len].to_vec(),
+                    timestamp: std::time::Instant::now(),
+                });
+            }
+        }
+
+        Ok(num_msgs)
+    }
+
     pub fn read_messages(&self, timeout_ms: u32) -> Result<Vec<CANMessage>, String> {
         self.read_messages_inner(timeout_ms, false)
     }
