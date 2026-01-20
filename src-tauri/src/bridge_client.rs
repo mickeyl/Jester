@@ -31,11 +31,19 @@ pub enum Request {
     SendMessagesBatch {
         messages: Vec<BatchMessage>,
     },
+    WriteMessagesRaw {
+        messages: Vec<BatchMessage>,
+        timeout_ms: u32,
+    },
     ReadMessages {
         timeout_ms: u32,
     },
     ReadMessagesWithLoopback {
         timeout_ms: u32,
+    },
+    ReadMessagesRaw {
+        timeout_ms: u32,
+        max_msgs: u32,
     },
     ClearBuffers,
     ReadVersion,
@@ -53,6 +61,12 @@ pub enum Request {
     },
     ClearPeriodicMessages,
     AddFilter {
+        filter_type: String,
+        mask: Vec<u8>,
+        pattern: Vec<u8>,
+        extended: bool,
+    },
+    AddFilterRaw {
         filter_type: String,
         mask: Vec<u8>,
         pattern: Vec<u8>,
@@ -95,11 +109,19 @@ pub enum ResponseData {
     Devices(Vec<DeviceInfo>),
     Connected,
     Messages(Vec<CanMessage>),
+    RawIo(RawIoResult),
     Version(VersionInfo),
     String(String),
     Number(u32),
     Float(f64),
     Bool(bool),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawIoResult {
+    pub result: i32,
+    pub num_msgs: u32,
 }
 
 /// Device information from the bridge
@@ -165,10 +187,7 @@ pub struct BridgeClient {
 impl BridgeClient {
     /// Create a new bridge client (doesn't start the bridge yet)
     pub fn new() -> Self {
-        let pipe_name = format!(
-            "\\\\.\\pipe\\jester-j2534-{}",
-            std::process::id()
-        );
+        let pipe_name = format!("\\\\.\\pipe\\jester-j2534-{}", std::process::id());
 
         Self {
             process: None,
@@ -213,15 +232,17 @@ impl BridgeClient {
         // Try release build first, then debug
         for build_type in &["release", "debug"] {
             let dev_path = exe_dir
-                .parent()  // -> target/x86_64-pc-windows-msvc/
-                .and_then(|p| p.parent())  // -> target/
-                .and_then(|p| p.parent())  // -> src-tauri/
-                .and_then(|p| p.parent())  // -> Jester/
-                .map(|p| p.join("j2534-bridge")
-                          .join("target")
-                          .join(target_triple)
-                          .join(build_type)
-                          .join("j2534-bridge.exe"));
+                .parent() // -> target/x86_64-pc-windows-msvc/
+                .and_then(|p| p.parent()) // -> target/
+                .and_then(|p| p.parent()) // -> src-tauri/
+                .and_then(|p| p.parent()) // -> Jester/
+                .map(|p| {
+                    p.join("j2534-bridge")
+                        .join("target")
+                        .join(target_triple)
+                        .join(build_type)
+                        .join("j2534-bridge.exe")
+                });
 
             if let Some(path) = dev_path {
                 eprintln!("[client] Looking for bridge at: {:?}", path);
@@ -231,7 +252,10 @@ impl BridgeClient {
             }
         }
 
-        Err(format!("Bridge executable not found: {} (looked in {:?} and development paths)", bridge_name, exe_dir))
+        Err(format!(
+            "Bridge executable not found: {} (looked in {:?} and development paths)",
+            bridge_name, exe_dir
+        ))
     }
 
     /// Start the bridge process for the given DLL bitness
@@ -278,13 +302,15 @@ impl BridgeClient {
                 windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
                 None,
             )
-        }.map_err(|e| format!("Failed to connect to pipe: {}", e))?;
+        }
+        .map_err(|e| format!("Failed to connect to pipe: {}", e))?;
 
         // Convert to std::fs::File
         let handle_raw = pipe_handle.0 as *mut std::ffi::c_void;
         let file = unsafe { std::fs::File::from_raw_handle(handle_raw) };
 
-        let reader_file = file.try_clone()
+        let reader_file = file
+            .try_clone()
             .map_err(|e| format!("Failed to clone pipe handle: {}", e))?;
 
         self.writer = Some(file);
@@ -323,10 +349,8 @@ impl BridgeClient {
     pub fn send_request(&mut self, request: Request) -> Result<Response, String> {
         let request_debug = format!("{:?}", request);
 
-        let writer = self.writer.as_mut()
-            .ok_or("Bridge not connected")?;
-        let reader = self.reader.as_mut()
-            .ok_or("Bridge not connected")?;
+        let writer = self.writer.as_mut().ok_or("Bridge not connected")?;
+        let reader = self.reader.as_mut().ok_or("Bridge not connected")?;
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let msg = Message {
@@ -337,14 +361,15 @@ impl BridgeClient {
         let json = serde_json::to_string(&msg)
             .map_err(|e| format!("Failed to serialize request: {}", e))?;
 
-        writeln!(writer, "{}", json)
-            .map_err(|e| format!("Failed to write to pipe: {}", e))?;
-        writer.flush()
+        writeln!(writer, "{}", json).map_err(|e| format!("Failed to write to pipe: {}", e))?;
+        writer
+            .flush()
             .map_err(|e| format!("Failed to flush pipe: {}", e))?;
 
         // Read response
         let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)
+        let bytes_read = reader
+            .read_line(&mut line)
             .map_err(|e| format!("Failed to read from pipe: {}", e))?;
 
         // Check if pipe was closed (bridge process died)
@@ -353,20 +378,27 @@ impl BridgeClient {
             let bridge_status = self.check_bridge_status();
             return Err(format!(
                 "Bridge process died while handling request: {}. {}",
-                request_debug,
-                bridge_status
+                request_debug, bridge_status
             ));
         }
 
-        let response: Message<Response> = serde_json::from_str(&line)
-            .map_err(|e| format!(
+        let response: Message<Response> = serde_json::from_str(&line).map_err(|e| {
+            format!(
                 "Failed to parse bridge response: {}. Raw response: {:?}",
                 e,
-                if line.len() > 200 { &line[..200] } else { &line }
-            ))?;
+                if line.len() > 200 {
+                    &line[..200]
+                } else {
+                    &line
+                }
+            )
+        })?;
 
         if response.id != id {
-            return Err(format!("Response ID mismatch: expected {}, got {}", id, response.id));
+            return Err(format!(
+                "Response ID mismatch: expected {}, got {}",
+                id, response.id
+            ));
         }
 
         Ok(response.payload)
@@ -377,7 +409,10 @@ impl BridgeClient {
         if let Some(ref mut child) = self.process {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    format!("Bridge exited with status: {}. The J2534 DLL may have crashed.", status)
+                    format!(
+                        "Bridge exited with status: {}. The J2534 DLL may have crashed.",
+                        status
+                    )
                 }
                 Ok(None) => {
                     "Bridge process still running but pipe closed unexpectedly.".to_string()

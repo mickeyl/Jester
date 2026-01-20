@@ -14,12 +14,12 @@ use tauri::{AppHandle, Emitter, State};
 
 #[cfg(windows)]
 use j2534::{
-    CANMessage, ConnectionStatus, J2534Config,
-    J2534VersionInfo, PASS_FILTER, BLOCK_FILTER, FLOW_CONTROL_FILTER,
+    error_code_to_string, CANMessage, ConnectionStatus, J2534Config, J2534VersionInfo,
+    BLOCK_FILTER, ERR_BUFFER_EMPTY, ERR_TIMEOUT, FLOW_CONTROL_FILTER, PASS_FILTER, STATUS_NOERROR,
 };
 
 #[cfg(windows)]
-use j2534_unified::{UnifiedConnection, J2534DeviceExt};
+use j2534_unified::{J2534DeviceExt, UnifiedConnection};
 
 #[cfg(not(windows))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,9 +290,15 @@ async fn j2534_connect(
         // Create a channel for progress updates
         let app_handle = app.clone();
 
-        let connection = UnifiedConnection::open(&dll_path, protocol_id, baud_rate, use_extended_id, move |progress| {
-            let _ = app_handle.emit("j2534-progress", progress);
-        })?;
+        let connection = UnifiedConnection::open(
+            &dll_path,
+            protocol_id,
+            baud_rate,
+            use_extended_id,
+            move |progress| {
+                let _ = app_handle.emit("j2534-progress", progress);
+            },
+        )?;
 
         // Store connection and config
         *state.connection.lock().unwrap() = Some(connection);
@@ -583,7 +589,12 @@ async fn j2534_start_periodic_message(
             .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
-        conn.start_periodic_message(request.arb_id, &request.data, request.interval_ms, request.extended)
+        conn.start_periodic_message(
+            request.arb_id,
+            &request.data,
+            request.interval_ms,
+            request.extended,
+        )
     }
 
     #[cfg(not(windows))]
@@ -594,7 +605,10 @@ async fn j2534_start_periodic_message(
 }
 
 #[tauri::command]
-async fn j2534_stop_periodic_message(msg_id: u32, state: State<'_, AppState>) -> Result<(), String> {
+async fn j2534_stop_periodic_message(
+    msg_id: u32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut connection = state.connection.lock().unwrap();
@@ -632,14 +646,22 @@ async fn j2534_clear_periodic_messages(state: State<'_, AppState>) -> Result<(),
 }
 
 #[tauri::command]
-async fn j2534_add_filter(request: FilterRequest, state: State<'_, AppState>) -> Result<u32, String> {
+async fn j2534_add_filter(
+    request: FilterRequest,
+    state: State<'_, AppState>,
+) -> Result<u32, String> {
     #[cfg(windows)]
     {
         let filter_type = match request.filter_type.as_str() {
             "pass" => PASS_FILTER,
             "block" => BLOCK_FILTER,
             "flow_control" => FLOW_CONTROL_FILTER,
-            _ => return Err("ERR_INVALID_FILTER_TYPE: Must be 'pass', 'block', or 'flow_control'".to_string()),
+            _ => {
+                return Err(
+                    "ERR_INVALID_FILTER_TYPE: Must be 'pass', 'block', or 'flow_control'"
+                        .to_string(),
+                )
+            }
         };
 
         let mut connection = state.connection.lock().unwrap();
@@ -647,7 +669,12 @@ async fn j2534_add_filter(request: FilterRequest, state: State<'_, AppState>) ->
             .as_mut()
             .ok_or("ERR_NOT_CONNECTED: No active connection")?;
 
-        conn.add_filter(filter_type, &request.mask, &request.pattern, request.extended)
+        conn.add_filter(
+            filter_type,
+            &request.mask,
+            &request.pattern,
+            request.extended,
+        )
     }
 
     #[cfg(not(windows))]
@@ -715,7 +742,11 @@ async fn j2534_get_config(parameter: u32, state: State<'_, AppState>) -> Result<
 }
 
 #[tauri::command]
-async fn j2534_set_config(parameter: u32, value: u32, state: State<'_, AppState>) -> Result<(), String> {
+async fn j2534_set_config(
+    parameter: u32,
+    value: u32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut connection = state.connection.lock().unwrap();
@@ -912,6 +943,102 @@ async fn j2534_run_sanity_suite(
             }
         }
 
+        // ReadMsgs timeout semantics (Timeout > 0 should return ERR_TIMEOUT when no messages)
+        let start = Instant::now();
+        let _ = conn.clear_buffers();
+        match conn.read_messages_raw(100, 1) {
+            Ok(raw) => {
+                let code_name = error_code_to_string(raw.result);
+                let (status, message) = if raw.result == ERR_TIMEOUT && raw.num_msgs == 0 {
+                    ("pass", "ERR_TIMEOUT with 0 messages (expected)".to_string())
+                } else if raw.result == ERR_BUFFER_EMPTY && raw.num_msgs == 0 {
+                    (
+                        "fail",
+                        "ERR_BUFFER_EMPTY returned for Timeout>0 (expected ERR_TIMEOUT)"
+                            .to_string(),
+                    )
+                } else if raw.result == STATUS_NOERROR && raw.num_msgs > 0 {
+                    (
+                        "warn",
+                        "Bus active; received messages, timeout test inconclusive".to_string(),
+                    )
+                } else if raw.result == ERR_TIMEOUT && raw.num_msgs > 0 {
+                    (
+                        "warn",
+                        format!(
+                            "ERR_TIMEOUT with {} message(s); bus traffic present",
+                            raw.num_msgs
+                        ),
+                    )
+                } else {
+                    (
+                        "warn",
+                        format!(
+                            "Unexpected result {} ({}), num_msgs={}",
+                            raw.result, code_name, raw.num_msgs
+                        ),
+                    )
+                };
+                push_sanity_step(&mut steps, &app, "ReadMsgs Timeout", status, message, start);
+            }
+            Err(err) => {
+                push_sanity_step(&mut steps, &app, "ReadMsgs Timeout", "fail", err, start);
+            }
+        }
+
+        // WriteMsgs timeout semantics (short timeout should return ERR_TIMEOUT if not all sent)
+        let start = Instant::now();
+        let timeout_ms = 1;
+        let requested = 64u32;
+        let mut batch: Vec<(u32, Vec<u8>, bool)> = Vec::with_capacity(requested as usize);
+        for i in 0..requested {
+            let data = vec![0xA5, 0x5A, (i & 0xFF) as u8, 0x00, 0x11, 0x22, 0x33, 0x44];
+            batch.push((options.arb_id, data, options.extended));
+        }
+        match conn.write_messages_raw(batch, timeout_ms) {
+            Ok(raw) => {
+                let code_name = error_code_to_string(raw.result);
+                let (status, message) = if raw.result == ERR_TIMEOUT && raw.num_msgs < requested {
+                    (
+                        "pass",
+                        format!(
+                            "ERR_TIMEOUT after {} of {} messages (expected)",
+                            raw.num_msgs, requested
+                        ),
+                    )
+                } else if raw.result == STATUS_NOERROR && raw.num_msgs == requested {
+                    (
+                        "warn",
+                        "All messages sent; timeout not triggered".to_string(),
+                    )
+                } else if raw.result == ERR_TIMEOUT && raw.num_msgs == requested {
+                    (
+                        "warn",
+                        "ERR_TIMEOUT but all messages reported sent".to_string(),
+                    )
+                } else {
+                    (
+                        "warn",
+                        format!(
+                            "Unexpected result {} ({}), sent {}/{}",
+                            raw.result, code_name, raw.num_msgs, requested
+                        ),
+                    )
+                };
+                push_sanity_step(
+                    &mut steps,
+                    &app,
+                    "WriteMsgs Timeout",
+                    status,
+                    message,
+                    start,
+                );
+            }
+            Err(err) => {
+                push_sanity_step(&mut steps, &app, "WriteMsgs Timeout", "fail", err, start);
+            }
+        }
+
         // Loopback support (warn if unsupported)
         let start = Instant::now();
         let mut loopback_supported = false;
@@ -924,7 +1051,8 @@ async fn j2534_run_sanity_suite(
             Ok(state) => {
                 loopback_supported = true;
                 original_loopback = Some(state);
-                loopback_message = format!("Loopback reported {}", if state { "ON" } else { "OFF" });
+                loopback_message =
+                    format!("Loopback reported {}", if state { "ON" } else { "OFF" });
             }
             Err(err) => {
                 loopback_message = format!("Loopback not supported: {}", err);
@@ -933,24 +1061,22 @@ async fn j2534_run_sanity_suite(
 
         if loopback_supported {
             match conn.set_loopback(true) {
-                Ok(()) => {
-                    match conn.get_loopback() {
-                        Ok(state) => {
-                            if state {
-                                loopback_enabled = true;
-                                loopback_status = "pass";
-                                loopback_message = "Loopback enabled".to_string();
-                            } else {
-                                loopback_status = "warn";
-                                loopback_message = "Loopback set but readback is OFF".to_string();
-                            }
-                        }
-                        Err(err) => {
+                Ok(()) => match conn.get_loopback() {
+                    Ok(state) => {
+                        if state {
+                            loopback_enabled = true;
+                            loopback_status = "pass";
+                            loopback_message = "Loopback enabled".to_string();
+                        } else {
                             loopback_status = "warn";
-                            loopback_message = format!("Loopback set; readback failed: {}", err);
+                            loopback_message = "Loopback set but readback is OFF".to_string();
                         }
                     }
-                }
+                    Err(err) => {
+                        loopback_status = "warn";
+                        loopback_message = format!("Loopback set; readback failed: {}", err);
+                    }
+                },
                 Err(err) => {
                     loopback_status = "warn";
                     loopback_message = format!("Loopback set failed: {}", err);
@@ -1050,8 +1176,8 @@ async fn j2534_run_sanity_suite(
         } else {
             *state.messages_sent.lock().unwrap() += 1;
             let mut received: Vec<CANMessage> = Vec::new();
-            let deadline = Instant::now()
-                + Duration::from_millis(options.response_timeout_ms.max(100) as u64);
+            let deadline =
+                Instant::now() + Duration::from_millis(options.response_timeout_ms.max(100) as u64);
             let read_timeout = options.response_timeout_ms.min(250).max(50);
             let mut read_failed = false;
 
@@ -1170,7 +1296,10 @@ async fn j2534_run_sanity_suite(
                                 &app,
                                 "Periodic Message",
                                 "pass",
-                                format!("Received {} periodic messages via loopback", periodic_count),
+                                format!(
+                                    "Received {} periodic messages via loopback",
+                                    periodic_count
+                                ),
                                 start,
                             );
                         } else if periodic_count == 1 {
@@ -1219,12 +1348,22 @@ async fn j2534_run_sanity_suite(
                                 &app,
                                 "Periodic Message",
                                 "warn",
-                                format!("API works (ID {}), but no loopback to verify delivery", msg_id),
+                                format!(
+                                    "API works (ID {}), but no loopback to verify delivery",
+                                    msg_id
+                                ),
                                 start,
                             );
                         }
                         Err(err) => {
-                            push_sanity_step(&mut steps, &app, "Periodic Message", "fail", err, start);
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Periodic Message",
+                                "fail",
+                                err,
+                                start,
+                            );
                         }
                     }
                 }
@@ -1253,16 +1392,60 @@ async fn j2534_run_sanity_suite(
                     start,
                 );
             } else {
-                // Clear existing filters and buffers
+                // Default filter policy check (no filters)
+                let start = Instant::now();
+                let _ = conn.clear_filters();
+                let _ = conn.clear_buffers();
+                let _ = conn.send_message(filter_pass_id, &filter_test_data, false);
+                std::thread::sleep(Duration::from_millis(50));
+
+                let mut observed = 0;
+                let deadline = Instant::now() + Duration::from_millis(150);
+                while Instant::now() < deadline {
+                    match conn.read_messages_with_loopback(25) {
+                        Ok(msgs) => {
+                            for msg in &msgs {
+                                if msg.arb_id == filter_pass_id {
+                                    observed += 1;
+                                }
+                            }
+                            if msgs.is_empty() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+
+                let policy_msg = if observed > 0 {
+                    "Default policy: PASS (no filters = traffic allowed)"
+                } else {
+                    "Default policy: BLOCK (no filters = traffic blocked)"
+                };
+                push_sanity_step(
+                    &mut steps,
+                    &app,
+                    "Filter Default Policy",
+                    "warn",
+                    policy_msg.to_string(),
+                    start,
+                );
+
+                // Clear existing filters and buffers for ID-only filter test
                 let _ = conn.clear_filters();
                 let _ = conn.clear_buffers();
 
                 // Add a pass filter that only allows filter_pass_id (0x100)
                 // Mask 0x7FF means all 11 bits must match, pattern is the ID to match
                 let full_mask = [0x00, 0x00, 0x07, 0xFF]; // Match all 11 bits of standard CAN ID
-                let pattern = [(filter_pass_id >> 24) as u8, (filter_pass_id >> 16) as u8,
-                              (filter_pass_id >> 8) as u8, filter_pass_id as u8];
+                let pattern = [
+                    (filter_pass_id >> 24) as u8,
+                    (filter_pass_id >> 16) as u8,
+                    (filter_pass_id >> 8) as u8,
+                    filter_pass_id as u8,
+                ];
 
+                let start = Instant::now();
                 match conn.add_filter(PASS_FILTER, &full_mask, &pattern, false) {
                     Ok(filter_id) => {
                         // Send message that should pass filter
@@ -1294,7 +1477,7 @@ async fn j2534_run_sanity_suite(
                             }
                         }
 
-                        // Remove filter and restore pass-all
+                        // Remove filter
                         let _ = conn.remove_filter(filter_id);
 
                         // Evaluate results
@@ -1304,7 +1487,10 @@ async fn j2534_run_sanity_suite(
                                 &app,
                                 "Message Filter",
                                 "pass",
-                                format!("Filter working: {} passed, {} blocked", pass_count, block_count),
+                                format!(
+                                    "Filter working: {} passed, {} blocked",
+                                    pass_count, block_count
+                                ),
                                 start,
                             );
                         } else if pass_count > 0 && block_count > 0 {
@@ -1313,7 +1499,10 @@ async fn j2534_run_sanity_suite(
                                 &app,
                                 "Message Filter",
                                 "warn",
-                                format!("Filter partial: {} passed, {} leaked through", pass_count, block_count),
+                                format!(
+                                    "Filter partial: {} passed, {} leaked through",
+                                    pass_count, block_count
+                                ),
                                 start,
                             );
                         } else if pass_count == 0 && block_count == 0 {
@@ -1341,10 +1530,135 @@ async fn j2534_run_sanity_suite(
                     }
                 }
 
+                // Data-aware filter test (12 bytes = ID + 8 data bytes)
+                let start = Instant::now();
+                let _ = conn.clear_filters();
+                let _ = conn.clear_buffers();
+
+                let data_match = [0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44];
+                let data_mismatch = [0xAA, 0xBB, 0xCC, 0xEE, 0x11, 0x22, 0x33, 0x44];
+
+                let mut mask12 = vec![0x00, 0x00, 0x07, 0xFF];
+                mask12.extend_from_slice(&[0xFF; 8]);
+                let mut pattern12 = vec![
+                    (filter_pass_id >> 24) as u8,
+                    (filter_pass_id >> 16) as u8,
+                    (filter_pass_id >> 8) as u8,
+                    filter_pass_id as u8,
+                ];
+                pattern12.extend_from_slice(&data_match);
+
+                match conn.add_filter_raw(PASS_FILTER, &mask12, &pattern12, false) {
+                    Ok(filter_id) => {
+                        let _ = conn.send_message(filter_pass_id, &data_match, false);
+                        let _ = conn.send_message(filter_pass_id, &data_mismatch, false);
+
+                        std::thread::sleep(Duration::from_millis(100));
+
+                        let mut match_count = 0;
+                        let mut mismatch_count = 0;
+                        let deadline = Instant::now() + Duration::from_millis(200);
+                        while Instant::now() < deadline {
+                            match conn.read_messages_with_loopback(50) {
+                                Ok(msgs) => {
+                                    for msg in &msgs {
+                                        if msg.arb_id == filter_pass_id
+                                            && msg.data.as_slice() == data_match
+                                        {
+                                            match_count += 1;
+                                        } else if msg.arb_id == filter_pass_id
+                                            && msg.data.as_slice() == data_mismatch
+                                        {
+                                            mismatch_count += 1;
+                                        }
+                                    }
+                                    if msgs.is_empty() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+
+                        let _ = conn.remove_filter(filter_id);
+
+                        if match_count > 0 && mismatch_count == 0 {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Filter Data Bytes",
+                                "pass",
+                                format!(
+                                    "Data-aware filter OK: {} match, {} mismatch",
+                                    match_count, mismatch_count
+                                ),
+                                start,
+                            );
+                        } else if match_count > 0 && mismatch_count > 0 {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Filter Data Bytes",
+                                "fail",
+                                format!(
+                                    "Data bytes ignored: {} match, {} mismatch passed",
+                                    match_count, mismatch_count
+                                ),
+                                start,
+                            );
+                        } else {
+                            push_sanity_step(
+                                &mut steps,
+                                &app,
+                                "Filter Data Bytes",
+                                "warn",
+                                "No messages received (filter may be too strict or loopback issue)"
+                                    .to_string(),
+                                start,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        push_sanity_step(&mut steps, &app, "Filter Data Bytes", "fail", err, start);
+                    }
+                }
+
+                // Flow control filter should be rejected on CAN
+                let start = Instant::now();
+                let _ = conn.clear_filters();
+                match conn.add_filter_raw(FLOW_CONTROL_FILTER, &pattern, &pattern, false) {
+                    Ok(filter_id) => {
+                        let _ = conn.remove_filter(filter_id);
+                        push_sanity_step(
+                            &mut steps,
+                            &app,
+                            "Flow Control Filter",
+                            "warn",
+                            "Accepted FLOW_CONTROL_FILTER on CAN (expected error)".to_string(),
+                            start,
+                        );
+                    }
+                    Err(err) => {
+                        push_sanity_step(
+                            &mut steps,
+                            &app,
+                            "Flow Control Filter",
+                            "pass",
+                            format!("Rejected FLOW_CONTROL_FILTER on CAN: {}", err),
+                            start,
+                        );
+                    }
+                }
+
                 // Restore pass-all filter and disable loopback
                 let pass_all_mask = [0u8, 0u8, 0u8, 0u8];
                 let pass_all_pattern = [0u8, 0u8, 0u8, 0u8];
-                let _ = conn.add_filter(PASS_FILTER, &pass_all_mask, &pass_all_pattern, options.extended);
+                let _ = conn.add_filter(
+                    PASS_FILTER,
+                    &pass_all_mask,
+                    &pass_all_pattern,
+                    options.extended,
+                );
                 let _ = conn.set_loopback(false);
             }
         } else {
@@ -1360,7 +1674,10 @@ async fn j2534_run_sanity_suite(
                             &app,
                             "Message Filter",
                             "warn",
-                            format!("API works (ID {}), but no loopback to verify filtering", filter_id),
+                            format!(
+                                "API works (ID {}), but no loopback to verify filtering",
+                                filter_id
+                            ),
                             start,
                         );
                     }
@@ -1417,8 +1734,7 @@ async fn j2534_run_sanity_suite(
 
 #[tauri::command]
 fn save_sanity_report(path: String, contents: String) -> Result<(), String> {
-    std::fs::write(&path, contents)
-        .map_err(|e| format!("ERR_SAVE_FAILED: {}", e))
+    std::fs::write(&path, contents).map_err(|e| format!("ERR_SAVE_FAILED: {}", e))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

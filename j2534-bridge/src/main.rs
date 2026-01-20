@@ -134,9 +134,7 @@ fn message_loop(pipe: std::fs::File) -> Result<(), Box<dyn std::error::Error>> {
         let response_payload = {
             let conn = Arc::clone(&connection);
             let request = msg.payload.clone();
-            match panic::catch_unwind(AssertUnwindSafe(|| {
-                handle_request(&request, &conn)
-            })) {
+            match panic::catch_unwind(AssertUnwindSafe(|| handle_request(&request, &conn))) {
                 Ok(response) => response,
                 Err(panic_info) => {
                     let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
@@ -221,7 +219,13 @@ fn handle_request(
                 return Response::error(-1, "Already connected");
             }
 
-            match j2534::J2534Connection::open(dll_path, *protocol_id, *baud_rate, *use_extended_id, |_| {}) {
+            match j2534::J2534Connection::open(
+                dll_path,
+                *protocol_id,
+                *baud_rate,
+                *use_extended_id,
+                |_| {},
+            ) {
                 Ok(conn) => {
                     *conn_guard = Some(conn);
                     Response::ok(ResponseData::Connected)
@@ -236,7 +240,11 @@ fn handle_request(
             Response::ok_none()
         }
 
-        Request::SendMessage { arb_id, data, extended } => {
+        Request::SendMessage {
+            arb_id,
+            data,
+            extended,
+        } => {
             let conn_guard = connection.lock().unwrap();
             match conn_guard.as_ref() {
                 Some(conn) => match conn.send_message(*arb_id, data, *extended) {
@@ -258,6 +266,29 @@ fn handle_request(
                         .collect();
                     match conn.send_messages_batch(&msg_tuples) {
                         Ok(num_sent) => Response::ok(ResponseData::Number(num_sent)),
+                        Err(e) => Response::error(-1, e),
+                    }
+                }
+                None => Response::error(-1, "Not connected"),
+            }
+        }
+
+        Request::WriteMessagesRaw {
+            messages,
+            timeout_ms,
+        } => {
+            let conn_guard = connection.lock().unwrap();
+            match conn_guard.as_ref() {
+                Some(conn) => {
+                    let msg_tuples: Vec<(u32, Vec<u8>, bool)> = messages
+                        .iter()
+                        .map(|m| (m.arb_id, m.data.clone(), m.extended))
+                        .collect();
+                    match conn.write_messages_raw(&msg_tuples, *timeout_ms) {
+                        Ok(raw) => Response::ok(ResponseData::RawIo(protocol::RawIoResult {
+                            result: raw.result,
+                            num_msgs: raw.num_msgs,
+                        })),
                         Err(e) => Response::error(-1, e),
                     }
                 }
@@ -303,6 +334,23 @@ fn handle_request(
                             .collect();
                         Response::ok(ResponseData::Messages(can_messages))
                     }
+                    Err(e) => Response::error(-1, e),
+                },
+                None => Response::error(-1, "Not connected"),
+            }
+        }
+
+        Request::ReadMessagesRaw {
+            timeout_ms,
+            max_msgs,
+        } => {
+            let conn_guard = connection.lock().unwrap();
+            match conn_guard.as_ref() {
+                Some(conn) => match conn.read_messages_raw(*timeout_ms, *max_msgs) {
+                    Ok(raw) => Response::ok(ResponseData::RawIo(protocol::RawIoResult {
+                        result: raw.result,
+                        num_msgs: raw.num_msgs,
+                    })),
                     Err(e) => Response::error(-1, e),
                 },
                 None => Response::error(-1, "Not connected"),
@@ -376,10 +424,12 @@ fn handle_request(
         } => {
             let conn_guard = connection.lock().unwrap();
             match conn_guard.as_ref() {
-                Some(conn) => match conn.start_periodic_message(*arb_id, data, *interval_ms, *extended) {
-                    Ok(id) => Response::ok(ResponseData::Number(id)),
-                    Err(e) => Response::error(-1, e),
-                },
+                Some(conn) => {
+                    match conn.start_periodic_message(*arb_id, data, *interval_ms, *extended) {
+                        Ok(id) => Response::ok(ResponseData::Number(id)),
+                        Err(e) => Response::error(-1, e),
+                    }
+                }
                 None => Response::error(-1, "Not connected"),
             }
         }
@@ -422,6 +472,30 @@ fn handle_request(
                         _ => return Response::error(-1, "Invalid filter type"),
                     };
                     match conn.add_filter(ft, mask, pattern, *extended) {
+                        Ok(id) => Response::ok(ResponseData::Number(id)),
+                        Err(e) => Response::error(-1, e),
+                    }
+                }
+                None => Response::error(-1, "Not connected"),
+            }
+        }
+
+        Request::AddFilterRaw {
+            filter_type,
+            mask,
+            pattern,
+            extended,
+        } => {
+            let conn_guard = connection.lock().unwrap();
+            match conn_guard.as_ref() {
+                Some(conn) => {
+                    let ft = match filter_type.as_str() {
+                        "pass" => j2534::PASS_FILTER,
+                        "block" => j2534::BLOCK_FILTER,
+                        "flow_control" => j2534::FLOW_CONTROL_FILTER,
+                        _ => return Response::error(-1, "Invalid filter type"),
+                    };
+                    match conn.add_filter_raw(ft, mask, pattern, *extended) {
                         Ok(id) => Response::ok(ResponseData::Number(id)),
                         Err(e) => Response::error(-1, e),
                     }

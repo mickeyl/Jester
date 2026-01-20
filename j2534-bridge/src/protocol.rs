@@ -32,8 +32,12 @@ pub enum Request {
 
     /// Send multiple CAN messages in a single PassThruWriteMsgs call
     /// Each message is (arb_id, data, extended)
-    SendMessagesBatch {
+    SendMessagesBatch { messages: Vec<BatchMessage> },
+
+    /// Send messages with a custom timeout and return raw result info
+    WriteMessagesRaw {
         messages: Vec<BatchMessage>,
+        timeout_ms: u32,
     },
 
     /// Read messages (with timeout in ms)
@@ -41,6 +45,9 @@ pub enum Request {
 
     /// Read messages including loopback echoes (for sanity testing)
     ReadMessagesWithLoopback { timeout_ms: u32 },
+
+    /// Read messages and return raw J2534 result code + count (for spec testing)
+    ReadMessagesRaw { timeout_ms: u32, max_msgs: u32 },
 
     /// Clear TX and RX buffers
     ClearBuffers,
@@ -73,6 +80,14 @@ pub enum Request {
 
     /// Add a message filter
     AddFilter {
+        filter_type: String,
+        mask: Vec<u8>,
+        pattern: Vec<u8>,
+        extended: bool,
+    },
+
+    /// Add a message filter with raw mask/pattern sizes (for spec testing)
+    AddFilterRaw {
         filter_type: String,
         mask: Vec<u8>,
         pattern: Vec<u8>,
@@ -133,6 +148,9 @@ pub enum ResponseData {
     /// Messages read from the bus
     Messages(Vec<CanMessage>),
 
+    /// Raw I/O result (error code + count)
+    RawIo(RawIoResult),
+
     /// Version information
     Version(VersionInfo),
 
@@ -147,6 +165,14 @@ pub enum ResponseData {
 
     /// Boolean result
     Bool(bool),
+}
+
+/// Raw J2534 result payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawIoResult {
+    pub result: i32,
+    pub num_msgs: u32,
 }
 
 /// J2534 device information

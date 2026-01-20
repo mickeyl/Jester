@@ -5,7 +5,9 @@
 //! - Cross-bitness support (64-bit app can use 32-bit DLLs and vice versa)
 //! - Consistent behavior regardless of DLL architecture
 
-use crate::bridge_client::{BatchMessage, BridgeClient, Request, Response, ResponseData};
+use crate::bridge_client::{
+    BatchMessage, BridgeClient, RawIoResult, Request, Response, ResponseData,
+};
 use crate::j2534::{self, CANMessage, J2534Progress, J2534VersionInfo};
 
 /// Extended device info that includes bitness
@@ -116,10 +118,17 @@ impl UnifiedConnection {
 
     /// Send multiple CAN messages in a single PassThruWriteMsgs call
     /// Returns the number of messages actually sent
-    pub fn send_messages_batch(&mut self, messages: Vec<(u32, Vec<u8>, bool)>) -> Result<u32, String> {
+    pub fn send_messages_batch(
+        &mut self,
+        messages: Vec<(u32, Vec<u8>, bool)>,
+    ) -> Result<u32, String> {
         let batch_messages: Vec<BatchMessage> = messages
             .into_iter()
-            .map(|(arb_id, data, extended)| BatchMessage { arb_id, data, extended })
+            .map(|(arb_id, data, extended)| BatchMessage {
+                arb_id,
+                data,
+                extended,
+            })
             .collect();
 
         let response = self.bridge.send_request(Request::SendMessagesBatch {
@@ -127,7 +136,38 @@ impl UnifiedConnection {
         })?;
 
         match response {
-            Response::Ok { data: ResponseData::Number(n) } => Ok(n),
+            Response::Ok {
+                data: ResponseData::Number(n),
+            } => Ok(n),
+            Response::Ok { .. } => Err("Unexpected response type".to_string()),
+            Response::Error { message, .. } => Err(message),
+        }
+    }
+
+    /// Send messages with a custom timeout and return raw J2534 result info
+    pub fn write_messages_raw(
+        &mut self,
+        messages: Vec<(u32, Vec<u8>, bool)>,
+        timeout_ms: u32,
+    ) -> Result<RawIoResult, String> {
+        let batch_messages: Vec<BatchMessage> = messages
+            .into_iter()
+            .map(|(arb_id, data, extended)| BatchMessage {
+                arb_id,
+                data,
+                extended,
+            })
+            .collect();
+
+        let response = self.bridge.send_request(Request::WriteMessagesRaw {
+            messages: batch_messages,
+            timeout_ms,
+        })?;
+
+        match response {
+            Response::Ok {
+                data: ResponseData::RawIo(raw),
+            } => Ok(raw),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -135,34 +175,66 @@ impl UnifiedConnection {
 
     /// Read CAN messages
     pub fn read_messages(&mut self, timeout_ms: u32) -> Result<Vec<CANMessage>, String> {
-        let response = self.bridge.send_request(Request::ReadMessages { timeout_ms })?;
+        let response = self
+            .bridge
+            .send_request(Request::ReadMessages { timeout_ms })?;
         match response {
-            Response::Ok { data: ResponseData::Messages(msgs) } => {
-                Ok(msgs.into_iter().map(|m| CANMessage {
+            Response::Ok {
+                data: ResponseData::Messages(msgs),
+            } => Ok(msgs
+                .into_iter()
+                .map(|m| CANMessage {
                     timestamp_us: m.timestamp_us,
                     arb_id: m.arb_id,
                     extended: m.extended,
                     data: m.data,
-                }).collect())
-            }
+                })
+                .collect()),
             Response::Ok { .. } => Ok(Vec::new()),
             Response::Error { message, .. } => Err(message),
         }
     }
 
     /// Read CAN messages including loopback echoes (for sanity testing)
-    pub fn read_messages_with_loopback(&mut self, timeout_ms: u32) -> Result<Vec<CANMessage>, String> {
-        let response = self.bridge.send_request(Request::ReadMessagesWithLoopback { timeout_ms })?;
+    pub fn read_messages_with_loopback(
+        &mut self,
+        timeout_ms: u32,
+    ) -> Result<Vec<CANMessage>, String> {
+        let response = self
+            .bridge
+            .send_request(Request::ReadMessagesWithLoopback { timeout_ms })?;
         match response {
-            Response::Ok { data: ResponseData::Messages(msgs) } => {
-                Ok(msgs.into_iter().map(|m| CANMessage {
+            Response::Ok {
+                data: ResponseData::Messages(msgs),
+            } => Ok(msgs
+                .into_iter()
+                .map(|m| CANMessage {
                     timestamp_us: m.timestamp_us,
                     arb_id: m.arb_id,
                     extended: m.extended,
                     data: m.data,
-                }).collect())
-            }
+                })
+                .collect()),
             Response::Ok { .. } => Ok(Vec::new()),
+            Response::Error { message, .. } => Err(message),
+        }
+    }
+
+    /// Read messages and return raw J2534 result info
+    pub fn read_messages_raw(
+        &mut self,
+        timeout_ms: u32,
+        max_msgs: u32,
+    ) -> Result<RawIoResult, String> {
+        let response = self.bridge.send_request(Request::ReadMessagesRaw {
+            timeout_ms,
+            max_msgs,
+        })?;
+        match response {
+            Response::Ok {
+                data: ResponseData::RawIo(raw),
+            } => Ok(raw),
+            Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
     }
@@ -180,13 +252,13 @@ impl UnifiedConnection {
     pub fn read_version(&mut self) -> Result<J2534VersionInfo, String> {
         let response = self.bridge.send_request(Request::ReadVersion)?;
         match response {
-            Response::Ok { data: ResponseData::Version(v) } => {
-                Ok(J2534VersionInfo {
-                    firmware_version: v.firmware_version,
-                    dll_version: v.dll_version,
-                    api_version: v.api_version,
-                })
-            }
+            Response::Ok {
+                data: ResponseData::Version(v),
+            } => Ok(J2534VersionInfo {
+                firmware_version: v.firmware_version,
+                dll_version: v.dll_version,
+                api_version: v.api_version,
+            }),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -196,7 +268,9 @@ impl UnifiedConnection {
     pub fn get_last_error(&mut self) -> Result<String, String> {
         let response = self.bridge.send_request(Request::GetLastError)?;
         match response {
-            Response::Ok { data: ResponseData::String(s) } => Ok(s),
+            Response::Ok {
+                data: ResponseData::String(s),
+            } => Ok(s),
             Response::Ok { .. } => Ok(String::new()),
             Response::Error { message, .. } => Err(message),
         }
@@ -206,7 +280,9 @@ impl UnifiedConnection {
     pub fn read_battery_voltage(&mut self) -> Result<f64, String> {
         let response = self.bridge.send_request(Request::ReadBatteryVoltage)?;
         match response {
-            Response::Ok { data: ResponseData::Float(v) } => Ok(v),
+            Response::Ok {
+                data: ResponseData::Float(v),
+            } => Ok(v),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -216,7 +292,9 @@ impl UnifiedConnection {
     pub fn read_programming_voltage(&mut self) -> Result<f64, String> {
         let response = self.bridge.send_request(Request::ReadProgrammingVoltage)?;
         match response {
-            Response::Ok { data: ResponseData::Float(v) } => Ok(v),
+            Response::Ok {
+                data: ResponseData::Float(v),
+            } => Ok(v),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -237,7 +315,9 @@ impl UnifiedConnection {
             extended,
         })?;
         match response {
-            Response::Ok { data: ResponseData::Number(id) } => Ok(id),
+            Response::Ok {
+                data: ResponseData::Number(id),
+            } => Ok(id),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -245,7 +325,9 @@ impl UnifiedConnection {
 
     /// Stop a periodic message
     pub fn stop_periodic_message(&mut self, msg_id: u32) -> Result<(), String> {
-        let response = self.bridge.send_request(Request::StopPeriodicMessage { msg_id })?;
+        let response = self
+            .bridge
+            .send_request(Request::StopPeriodicMessage { msg_id })?;
         match response {
             Response::Ok { .. } => Ok(()),
             Response::Error { message, .. } => Err(message),
@@ -282,7 +364,38 @@ impl UnifiedConnection {
             extended,
         })?;
         match response {
-            Response::Ok { data: ResponseData::Number(id) } => Ok(id),
+            Response::Ok {
+                data: ResponseData::Number(id),
+            } => Ok(id),
+            Response::Ok { .. } => Err("Unexpected response type".to_string()),
+            Response::Error { message, .. } => Err(message),
+        }
+    }
+
+    /// Add a message filter with raw mask/pattern sizes (1-12 bytes)
+    pub fn add_filter_raw(
+        &mut self,
+        filter_type: u32,
+        mask: &[u8],
+        pattern: &[u8],
+        extended: bool,
+    ) -> Result<u32, String> {
+        let ft = match filter_type {
+            1 => "pass",
+            2 => "block",
+            3 => "flow_control",
+            _ => return Err("Invalid filter type".to_string()),
+        };
+        let response = self.bridge.send_request(Request::AddFilterRaw {
+            filter_type: ft.to_string(),
+            mask: mask.to_vec(),
+            pattern: pattern.to_vec(),
+            extended,
+        })?;
+        match response {
+            Response::Ok {
+                data: ResponseData::Number(id),
+            } => Ok(id),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -290,7 +403,9 @@ impl UnifiedConnection {
 
     /// Remove a message filter
     pub fn remove_filter(&mut self, filter_id: u32) -> Result<(), String> {
-        let response = self.bridge.send_request(Request::RemoveFilter { filter_id })?;
+        let response = self
+            .bridge
+            .send_request(Request::RemoveFilter { filter_id })?;
         match response {
             Response::Ok { .. } => Ok(()),
             Response::Error { message, .. } => Err(message),
@@ -310,7 +425,9 @@ impl UnifiedConnection {
     pub fn get_config(&mut self, parameter: u32) -> Result<u32, String> {
         let response = self.bridge.send_request(Request::GetConfig { parameter })?;
         match response {
-            Response::Ok { data: ResponseData::Number(v) } => Ok(v),
+            Response::Ok {
+                data: ResponseData::Number(v),
+            } => Ok(v),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -318,7 +435,9 @@ impl UnifiedConnection {
 
     /// Set a configuration parameter
     pub fn set_config(&mut self, parameter: u32, value: u32) -> Result<(), String> {
-        let response = self.bridge.send_request(Request::SetConfig { parameter, value })?;
+        let response = self
+            .bridge
+            .send_request(Request::SetConfig { parameter, value })?;
         match response {
             Response::Ok { .. } => Ok(()),
             Response::Error { message, .. } => Err(message),
@@ -329,7 +448,9 @@ impl UnifiedConnection {
     pub fn get_loopback(&mut self) -> Result<bool, String> {
         let response = self.bridge.send_request(Request::GetLoopback)?;
         match response {
-            Response::Ok { data: ResponseData::Bool(v) } => Ok(v),
+            Response::Ok {
+                data: ResponseData::Bool(v),
+            } => Ok(v),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -348,7 +469,9 @@ impl UnifiedConnection {
     pub fn get_data_rate(&mut self) -> Result<u32, String> {
         let response = self.bridge.send_request(Request::GetDataRate)?;
         match response {
-            Response::Ok { data: ResponseData::Number(v) } => Ok(v),
+            Response::Ok {
+                data: ResponseData::Number(v),
+            } => Ok(v),
             Response::Ok { .. } => Err("Unexpected response type".to_string()),
             Response::Error { message, .. } => Err(message),
         }
@@ -393,7 +516,8 @@ fn get_dll_bitness(dll_path: &str) -> Option<u8> {
         return None;
     }
 
-    let pe_offset = u32::from_le_bytes([header[0x3C], header[0x3D], header[0x3E], header[0x3F]]) as usize;
+    let pe_offset =
+        u32::from_le_bytes([header[0x3C], header[0x3D], header[0x3E], header[0x3F]]) as usize;
 
     let mut pe_header = [0u8; 6];
     use std::io::{Seek, SeekFrom};
@@ -401,7 +525,8 @@ fn get_dll_bitness(dll_path: &str) -> Option<u8> {
     file.seek(SeekFrom::Start(pe_offset as u64)).ok()?;
     file.read_exact(&mut pe_header).ok()?;
 
-    if pe_header[0] != 0x50 || pe_header[1] != 0x45 || pe_header[2] != 0x00 || pe_header[3] != 0x00 {
+    if pe_header[0] != 0x50 || pe_header[1] != 0x45 || pe_header[2] != 0x00 || pe_header[3] != 0x00
+    {
         return None;
     }
 
