@@ -717,7 +717,7 @@ impl J2534Connection {
 
             let result = write_fn(self.channel_id, &mut msg, &mut num_msgs, 1000);
             if result != STATUS_NOERROR {
-                return Err(format!("ERR_J2534_WRITE_FAILED: error code {}", result));
+                return Err(format!("ERR_J2534_WRITE_FAILED: error code {} [{}]", result, error_code_to_string(result)));
             }
         }
 
