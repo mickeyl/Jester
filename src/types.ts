@@ -206,3 +206,41 @@ export interface ActiveFilter {
   mask: number[];
   pattern: number[];
 }
+
+// Batch testing types
+export interface BatchTestConfig {
+  baseArbId: number;
+  messageCount: number;
+  intervalMs: number;
+  extended: boolean;
+  payloadSize: number;  // 1-6 bytes (2 bytes reserved for sequence number)
+}
+
+export interface BatchTestResult {
+  sequenceNumber: number;
+  sent: boolean;
+  sentAt?: number;
+  received: boolean;
+  receivedAt?: number;
+  roundTripMs?: number;
+}
+
+export interface BatchTestSummary {
+  totalSent: number;
+  totalReceived: number;
+  lostCount: number;
+  lossPercent: number;
+  minRoundTripMs?: number;
+  maxRoundTripMs?: number;
+  avgRoundTripMs?: number;
+}
+
+// Backend batch send request/result
+export interface BatchSendRequest {
+  messages: SendMessageRequest[];
+}
+
+export interface BatchSendResult {
+  requested: number;
+  sent: number;
+}
