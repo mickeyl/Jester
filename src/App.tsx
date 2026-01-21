@@ -235,6 +235,7 @@ function App() {
   const [batchArbId, setBatchArbId] = useState("7E0");
   const [batchCount, setBatchCount] = useState(100);
   const [batchInterval, setBatchInterval] = useState(10);
+  const [batchLoopCount, setBatchLoopCount] = useState(1);
   const [batchExtended, setBatchExtended] = useState(false);
   const [batchPayloadSize, setBatchPayloadSize] = useState(6);
   const [batchRunning, setBatchRunning] = useState(false);
@@ -794,6 +795,15 @@ function App() {
       setError("Invalid arbitration ID");
       return;
     }
+    if (batchLoopCount < 1) {
+      setError("Loop count must be at least 1");
+      return;
+    }
+    const totalMessages = batchCount * batchLoopCount;
+    if (useQualityTestFormat && totalMessages > 65535) {
+      setError("Quality Test Protocol supports up to 65,535 total messages");
+      return;
+    }
 
     // Only enable loopback for legacy mode (not quality test protocol)
     // Quality test protocol: Jester sends -> CANcorder receives
@@ -813,91 +823,100 @@ function App() {
     setBatchProgress(0);
     batchAbortRef.current = false;
 
-    const results = new Map<number, BatchTestResult>();
+    const showBatchDetails = !useQualityTestFormat && batchLoopCount === 1;
+    const results = showBatchDetails ? new Map<number, BatchTestResult>() : null;
+    let totalSent = 0;
+    let totalReceived = 0;
+    const roundTrips: number[] = [];
     const testStartTime = Date.now();
 
-    // Build all messages upfront
-    const messages: SendMessageRequest[] = [];
-    for (let seq = 0; seq < batchCount; seq++) {
-      let data: number[];
+    for (let loopIndex = 0; loopIndex < batchLoopCount; loopIndex++) {
+      if (batchAbortRef.current) break;
+
+      const baseSeq = loopIndex * batchCount;
+      const messages: SendMessageRequest[] = [];
+      for (let seq = 0; seq < batchCount; seq++) {
+        const seqNumber = baseSeq + seq;
+        let data: number[];
+
+        if (useQualityTestFormat) {
+          // Quality test protocol: 8-byte fixed format with magic marker
+          data = buildQualityTestMessage(seqNumber, testStartTime, qualityTestId);
+        } else {
+          // Legacy format: 2-byte sequence number (big endian) + padding
+          data = [
+            (seqNumber >> 8) & 0xff,
+            seqNumber & 0xff,
+          ];
+          // Add padding bytes
+          for (let i = 0; i < batchPayloadSize; i++) {
+            data.push((seqNumber + i) & 0xff);
+          }
+        }
+
+        messages.push({
+          arbId,
+          data,
+          extended: batchExtended,
+        });
+
+        if (results) {
+          results.set(seqNumber, {
+            sequenceNumber: seqNumber,
+            sent: false,
+            received: false,
+          });
+        }
+      }
+
+      let numSent = 0;
+      const sendTime = Date.now();
+      try {
+        const request: BatchSendRequest = { messages };
+        const result = await invoke<BatchSendResult>("j2534_send_messages_batch", { request });
+        numSent = result.sent;
+        totalSent += numSent;
+
+        if (results) {
+          for (let seq = 0; seq < numSent; seq++) {
+            const seqNumber = baseSeq + seq;
+            const r = results.get(seqNumber);
+            if (r) {
+              r.sent = true;
+              r.sentAt = sendTime;
+              results.set(seqNumber, r);
+            }
+          }
+        } else if (useQualityTestFormat) {
+          totalReceived += numSent;
+        }
+
+        console.log(`Batch send: requested=${result.requested}, sent=${result.sent}`);
+      } catch (err) {
+        setError(`Batch send failed: ${err}`);
+        console.error("Batch send error:", err);
+      }
 
       if (useQualityTestFormat) {
-        // Quality test protocol: 8-byte fixed format with magic marker
-        data = buildQualityTestMessage(seq, testStartTime, qualityTestId);
-      } else {
-        // Legacy format: 2-byte sequence number (big endian) + padding
-        data = [
-          (seq >> 8) & 0xff,
-          seq & 0xff,
-        ];
-        // Add padding bytes
-        for (let i = 0; i < batchPayloadSize; i++) {
-          data.push((seq + i) & 0xff);
-        }
+        setBatchProgress(((loopIndex + 1) / batchLoopCount) * 100);
+        continue;
       }
 
-      messages.push({
-        arbId,
-        data,
-        extended: batchExtended,
-      });
+      setBatchProgress(((loopIndex + 1) / batchLoopCount) * 50);
 
-      // Initialize result tracking
-      results.set(seq, {
-        sequenceNumber: seq,
-        sent: false,
-        received: false,
-      });
-    }
-
-    setBatchProgress(10);
-
-    // Send ALL messages in a single PassThruWriteMsgs call
-    let numSent = 0;
-    const sendTime = Date.now();
-    try {
-      const request: BatchSendRequest = { messages };
-      const result = await invoke<BatchSendResult>("j2534_send_messages_batch", { request });
-      numSent = result.sent;
-
-      // Mark sent messages
-      for (let seq = 0; seq < numSent; seq++) {
-        const r = results.get(seq);
-        if (r) {
-          r.sent = true;
-          r.sentAt = sendTime;
-          // For quality test protocol, mark as "received" since CANcorder handles reception
-          if (useQualityTestFormat) {
-            r.received = true;
-          }
-          results.set(seq, r);
-        }
-      }
-
-      console.log(`Batch send: requested=${result.requested}, sent=${result.sent}`);
-    } catch (err) {
-      setError(`Batch send failed: ${err}`);
-      console.error("Batch send error:", err);
-    }
-
-    setBatchProgress(50);
-
-    // For quality test protocol, skip loopback polling - CANcorder receives the packets
-    if (!useQualityTestFormat) {
       // Wait for responses - poll for a bit after sending
       const pollEndTime = Date.now() + Math.max(1000, batchCount * 5);
-
       while (Date.now() < pollEndTime && !batchAbortRef.current) {
-          try {
-            const messages = await invoke<CANMessage[]>("j2534_read_messages_with_loopback", {
-              timeoutMs: 50,
-            });
+        try {
+          const messages = await invoke<CANMessage[]>("j2534_read_messages_with_loopback", {
+            timeoutMs: 50,
+          });
 
           for (const msg of messages) {
             // Check if this is one of our messages (loopback)
             if (msg.arbId === arbId && msg.data.length >= 2) {
-              const seq = (msg.data[0] << 8) | msg.data[1];
-              if (seq >= 0 && seq < batchCount) {
+              if (results) {
+                const seq = (msg.data[0] << 8) | msg.data[1];
                 const existing = results.get(seq);
                 if (existing && !existing.received) {
                   existing.received = true;
@@ -907,6 +926,8 @@ function App() {
                   }
                   results.set(seq, existing);
                 }
+              } else {
+                totalReceived += 1;
               }
             }
           }
@@ -918,27 +939,25 @@ function App() {
           }
         }
 
-        setBatchProgress(50 + ((Date.now() - testStartTime) / (pollEndTime - testStartTime + batchCount * batchInterval)) * 50);
+        setBatchProgress(50 + ((loopIndex + 1) / batchLoopCount) * 50);
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     }
 
     // Calculate summary
-    let totalSent = 0;
-    let totalReceived = 0;
-    const roundTrips: number[] = [];
-
-    results.forEach((r) => {
-      if (r.sent) totalSent++;
-      if (r.received) totalReceived++;
-      if (r.roundTripMs !== undefined) roundTrips.push(r.roundTripMs);
-    });
+    if (results) {
+      results.forEach((r) => {
+        if (r.sent) totalSent++;
+        if (r.received) totalReceived++;
+        if (r.roundTripMs !== undefined) roundTrips.push(r.roundTripMs);
+      });
+    }
 
     const summary: BatchTestSummary = {
       totalSent,
       totalReceived,
-      lostCount: totalSent - totalReceived,
-      lossPercent: totalSent > 0 ? ((totalSent - totalReceived) / totalSent) * 100 : 0,
+      lostCount: Math.max(totalSent - totalReceived, 0),
+      lossPercent: totalSent > 0 ? (Math.max(totalSent - totalReceived, 0) / totalSent) * 100 : 0,
     };
 
     if (roundTrips.length > 0) {
@@ -947,11 +966,15 @@ function App() {
       summary.avgRoundTripMs = roundTrips.reduce((a, b) => a + b, 0) / roundTrips.length;
     }
 
-    setBatchResults(new Map(results));
+    if (results) {
+      setBatchResults(new Map(results));
+    } else {
+      setBatchResults(new Map());
+    }
     setBatchSummary(summary);
     setBatchProgress(100);
     setBatchRunning(false);
-  }, [status.connected, batchRunning, batchArbId, batchCount, batchInterval, batchExtended, batchPayloadSize, useQualityTestFormat, qualityTestId, buildQualityTestMessage]);
+  }, [status.connected, batchRunning, batchArbId, batchCount, batchInterval, batchExtended, batchPayloadSize, batchLoopCount, useQualityTestFormat, qualityTestId, buildQualityTestMessage]);
 
   const handleAbortBatchTest = useCallback(() => {
     batchAbortRef.current = true;
@@ -965,6 +988,7 @@ function App() {
 
   const isWindows = platformInfo?.platform === "windows";
   const sanitySummary = sanityReport ? summarizeSanity(sanityReport) : null;
+  const showBatchDetails = !useQualityTestFormat && batchLoopCount === 1;
 
   return (
     <div className="app-container">
@@ -1687,6 +1711,18 @@ function App() {
                 />
               </div>
               <div className="form-group">
+                <label>Loop Count</label>
+                <input
+                  type="number"
+                  value={batchLoopCount}
+                  onChange={(e) => setBatchLoopCount(Math.max(1, Math.min(100000, Number(e.target.value))))}
+                  min={1}
+                  max={100000}
+                  disabled={batchRunning}
+                  style={{ width: "100px" }}
+                />
+              </div>
+              <div className="form-group">
                 <label>Interval (ms)</label>
                 <input
                   type="number"
@@ -1755,6 +1791,11 @@ function App() {
                 Quality Test Protocol uses 8-byte packets: Magic (0xCAFE) + Seq (2B) + Timestamp (2B) + TestID (1B) + Checksum (1B)
               </p>
             )}
+            {!showBatchDetails && (
+              <p className="batch-note" style={{ marginTop: "8px", fontSize: "12px", color: "#888" }}>
+                Sequence details are hidden when looping or using the Quality Test Protocol.
+              </p>
+            )}
 
             <div className="batch-actions">
               {!batchRunning ? (
@@ -1773,7 +1814,7 @@ function App() {
               <button
                 className="secondary"
                 onClick={handleClearBatchResults}
-                disabled={batchRunning || batchResults.size === 0}
+                disabled={batchRunning || (batchResults.size === 0 && !batchSummary)}
               >
                 Clear Results
               </button>
@@ -1823,7 +1864,7 @@ function App() {
             </div>
           )}
 
-          {batchResults.size > 0 && (
+          {showBatchDetails && batchResults.size > 0 && (
             <div className="batch-results">
               <h3>Sequence Details</h3>
               <div className="sequence-grid">
