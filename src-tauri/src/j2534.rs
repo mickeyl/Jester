@@ -571,7 +571,7 @@ impl J2534Connection {
 
             let result = open_fn(std::ptr::null(), &mut device_id);
             if result != STATUS_NOERROR {
-                return Err(format!("ERR_J2534_OPEN_FAILED: error code {}", result));
+                return Err(format!("ERR_J2534_OPEN_FAILED: error code {} ({})", result, error_code_to_string(result)));
             }
         }
 
@@ -602,7 +602,7 @@ impl J2534Connection {
                 if let Ok(close_fn) = library.get::<PassThruCloseFn>(b"PassThruClose\0") {
                     close_fn(device_id);
                 }
-                return Err(format!("ERR_J2534_CONNECT_FAILED: error code {}", result));
+                return Err(format!("ERR_J2534_CONNECT_FAILED: error code {} ({})", result, error_code_to_string(result)));
             }
         }
 
@@ -644,7 +644,7 @@ impl J2534Connection {
                 if let Ok(close_fn) = library.get::<PassThruCloseFn>(b"PassThruClose\0") {
                     close_fn(device_id);
                 }
-                return Err(format!("ERR_J2534_FILTER_FAILED: error code {}", result));
+                return Err(format!("ERR_J2534_FILTER_FAILED: error code {} ({})", result, error_code_to_string(result)));
             }
         }
 
@@ -764,7 +764,7 @@ impl J2534Connection {
             // Allow STATUS_NOERROR, ERR_BUFFER_EMPTY, and ERR_TIMEOUT
             // ERR_TIMEOUT can still return messages (e.g., ScanDoc WiFi adapter)
             if result != STATUS_NOERROR && result != ERR_BUFFER_EMPTY && result != ERR_TIMEOUT {
-                return Err(format!("ERR_J2534_READ_FAILED: error code {}", result));
+                return Err(format!("ERR_J2534_READ_FAILED: error code {} ({})", result, error_code_to_string(result)));
             }
         }
 

@@ -234,7 +234,6 @@ function App() {
   // Batch test state
   const [batchArbId, setBatchArbId] = useState("7E0");
   const [batchCount, setBatchCount] = useState(100);
-  const [batchInterval, setBatchInterval] = useState(10);
   const [batchLoopCount, setBatchLoopCount] = useState(1);
   const [batchExtended, setBatchExtended] = useState(false);
   const [batchPayloadSize, setBatchPayloadSize] = useState(6);
@@ -974,7 +973,7 @@ function App() {
     setBatchSummary(summary);
     setBatchProgress(100);
     setBatchRunning(false);
-  }, [status.connected, batchRunning, batchArbId, batchCount, batchInterval, batchExtended, batchPayloadSize, batchLoopCount, useQualityTestFormat, qualityTestId, buildQualityTestMessage]);
+  }, [status.connected, batchRunning, batchArbId, batchCount, batchExtended, batchPayloadSize, batchLoopCount, useQualityTestFormat, qualityTestId, buildQualityTestMessage]);
 
   const handleAbortBatchTest = useCallback(() => {
     batchAbortRef.current = true;
@@ -1720,18 +1719,6 @@ function App() {
                   max={100000}
                   disabled={batchRunning}
                   style={{ width: "100px" }}
-                />
-              </div>
-              <div className="form-group">
-                <label>Interval (ms)</label>
-                <input
-                  type="number"
-                  value={batchInterval}
-                  onChange={(e) => setBatchInterval(Math.max(0, Math.min(1000, Number(e.target.value))))}
-                  min={0}
-                  max={1000}
-                  disabled={batchRunning}
-                  style={{ width: "80px" }}
                 />
               </div>
               <div className="form-group">
