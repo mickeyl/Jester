@@ -244,3 +244,13 @@ export interface BatchSendResult {
   requested: number;
   sent: number;
 }
+
+// Quality test protocol types
+export interface QualityTestConfig {
+  baseArbId: number;
+  messageCount: number;     // 0-65535
+  intervalMs: number;
+  extended: boolean;
+  useQualityProtocol: boolean;  // Toggle magic marker format
+  testId: number;           // 0-255
+}

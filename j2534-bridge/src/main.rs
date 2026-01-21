@@ -5,6 +5,9 @@
 //! and vice versa.
 //!
 //! Usage: j2534-bridge.exe <pipe_name>
+//!
+//! Environment variables:
+//!   J2534_BRIDGE_VERBOSE=1  - Enable verbose logging of all requests
 
 mod j2534;
 mod protocol;
@@ -12,10 +15,20 @@ mod protocol;
 use protocol::{CanMessage, DeviceInfo, Message, Request, Response, ResponseData, VersionInfo};
 use std::io::{BufRead, BufReader, Write};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(windows)]
 use std::os::windows::io::FromRawHandle;
+
+/// Check if verbose logging is enabled via J2534_BRIDGE_VERBOSE env var
+fn is_verbose() -> bool {
+    static VERBOSE: OnceLock<bool> = OnceLock::new();
+    *VERBOSE.get_or_init(|| {
+        std::env::var("J2534_BRIDGE_VERBOSE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -128,7 +141,9 @@ fn message_loop(pipe: std::fs::File) -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        eprintln!("[bridge] Request {}: {:?}", msg.id, msg.payload);
+        if is_verbose() {
+            eprintln!("[bridge] Request {}: {:?}", msg.id, msg.payload);
+        }
 
         // Handle the request with panic catching to prevent silent bridge death
         let response_payload = {

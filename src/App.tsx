@@ -243,6 +243,10 @@ function App() {
   const [batchProgress, setBatchProgress] = useState(0);
   const batchAbortRef = useRef(false);
 
+  // Quality test protocol state
+  const [useQualityTestFormat, setUseQualityTestFormat] = useState(false);
+  const [qualityTestId, setQualityTestId] = useState(1);
+
   // Load platform info and devices on mount
   useEffect(() => {
     invoke<PlatformInfo>("get_platform_info").then(setPlatformInfo);
@@ -769,6 +773,18 @@ function App() {
     }
   }, [sanityReport]);
 
+  // Build quality test protocol message
+  const buildQualityTestMessage = useCallback((seq: number, testStartTime: number, testId: number): number[] => {
+    const magic = [0xCA, 0xFE];
+    const seqBytes = [(seq >> 8) & 0xFF, seq & 0xFF];
+    const tsOffset = (Date.now() - testStartTime) & 0xFFFF;
+    const tsBytes = [(tsOffset >> 8) & 0xFF, tsOffset & 0xFF];
+    const testIdByte = testId & 0xFF;
+    const payload = [...magic, ...seqBytes, ...tsBytes, testIdByte];
+    const checksum = payload.reduce((acc, b) => acc ^ b, 0);
+    return [...payload, checksum];
+  }, []);
+
   // Batch test handlers
   const handleRunBatchTest = useCallback(async () => {
     if (!status.connected || batchRunning) return;
@@ -779,12 +795,15 @@ function App() {
       return;
     }
 
-    // Enable loopback for the test
-    try {
-      await invoke("j2534_set_loopback", { enabled: true });
-    } catch (err) {
-      setError(`Failed to enable loopback: ${err}`);
-      return;
+    // Only enable loopback for legacy mode (not quality test protocol)
+    // Quality test protocol: Jester sends -> CANcorder receives
+    if (!useQualityTestFormat) {
+      try {
+        await invoke("j2534_set_loopback", { enabled: true });
+      } catch (err) {
+        setError(`Failed to enable loopback: ${err}`);
+        return;
+      }
     }
 
     setError(null);
@@ -795,19 +814,26 @@ function App() {
     batchAbortRef.current = false;
 
     const results = new Map<number, BatchTestResult>();
-    const startTime = Date.now();
+    const testStartTime = Date.now();
 
     // Build all messages upfront
     const messages: SendMessageRequest[] = [];
     for (let seq = 0; seq < batchCount; seq++) {
-      // Build message data: 2-byte sequence number (big endian) + padding
-      const data: number[] = [
-        (seq >> 8) & 0xff,
-        seq & 0xff,
-      ];
-      // Add padding bytes
-      for (let i = 0; i < batchPayloadSize; i++) {
-        data.push((seq + i) & 0xff);
+      let data: number[];
+
+      if (useQualityTestFormat) {
+        // Quality test protocol: 8-byte fixed format with magic marker
+        data = buildQualityTestMessage(seq, testStartTime, qualityTestId);
+      } else {
+        // Legacy format: 2-byte sequence number (big endian) + padding
+        data = [
+          (seq >> 8) & 0xff,
+          seq & 0xff,
+        ];
+        // Add padding bytes
+        for (let i = 0; i < batchPayloadSize; i++) {
+          data.push((seq + i) & 0xff);
+        }
       }
 
       messages.push({
@@ -840,6 +866,10 @@ function App() {
         if (r) {
           r.sent = true;
           r.sentAt = sendTime;
+          // For quality test protocol, mark as "received" since CANcorder handles reception
+          if (useQualityTestFormat) {
+            r.received = true;
+          }
           results.set(seq, r);
         }
       }
@@ -852,42 +882,45 @@ function App() {
 
     setBatchProgress(50);
 
-    // Wait for responses - poll for a bit after sending
-    const pollEndTime = Date.now() + Math.max(1000, batchCount * 5);
+    // For quality test protocol, skip loopback polling - CANcorder receives the packets
+    if (!useQualityTestFormat) {
+      // Wait for responses - poll for a bit after sending
+      const pollEndTime = Date.now() + Math.max(1000, batchCount * 5);
 
-    while (Date.now() < pollEndTime && !batchAbortRef.current) {
-        try {
-          const messages = await invoke<CANMessage[]>("j2534_read_messages_with_loopback", {
-            timeoutMs: 50,
-          });
+      while (Date.now() < pollEndTime && !batchAbortRef.current) {
+          try {
+            const messages = await invoke<CANMessage[]>("j2534_read_messages_with_loopback", {
+              timeoutMs: 50,
+            });
 
-        for (const msg of messages) {
-          // Check if this is one of our messages (loopback)
-          if (msg.arbId === arbId && msg.data.length >= 2) {
-            const seq = (msg.data[0] << 8) | msg.data[1];
-            if (seq >= 0 && seq < batchCount) {
-              const existing = results.get(seq);
-              if (existing && !existing.received) {
-                existing.received = true;
-                existing.receivedAt = Date.now();
-                if (existing.sentAt) {
-                  existing.roundTripMs = existing.receivedAt - existing.sentAt;
+          for (const msg of messages) {
+            // Check if this is one of our messages (loopback)
+            if (msg.arbId === arbId && msg.data.length >= 2) {
+              const seq = (msg.data[0] << 8) | msg.data[1];
+              if (seq >= 0 && seq < batchCount) {
+                const existing = results.get(seq);
+                if (existing && !existing.received) {
+                  existing.received = true;
+                  existing.receivedAt = Date.now();
+                  if (existing.sentAt) {
+                    existing.roundTripMs = existing.receivedAt - existing.sentAt;
+                  }
+                  results.set(seq, existing);
                 }
-                results.set(seq, existing);
               }
             }
           }
+        } catch (err) {
+          // Ignore buffer empty errors
+          const errStr = String(err);
+          if (!errStr.includes("ERR_BUFFER_EMPTY")) {
+            console.error("Read error during batch:", err);
+          }
         }
-      } catch (err) {
-        // Ignore buffer empty errors
-        const errStr = String(err);
-        if (!errStr.includes("ERR_BUFFER_EMPTY")) {
-          console.error("Read error during batch:", err);
-        }
-      }
 
-      setBatchProgress(50 + ((Date.now() - startTime) / (pollEndTime - startTime + batchCount * batchInterval)) * 50);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+        setBatchProgress(50 + ((Date.now() - testStartTime) / (pollEndTime - testStartTime + batchCount * batchInterval)) * 50);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
     }
 
     // Calculate summary
@@ -918,7 +951,7 @@ function App() {
     setBatchSummary(summary);
     setBatchProgress(100);
     setBatchRunning(false);
-  }, [status.connected, batchRunning, batchArbId, batchCount, batchInterval, batchExtended, batchPayloadSize]);
+  }, [status.connected, batchRunning, batchArbId, batchCount, batchInterval, batchExtended, batchPayloadSize, useQualityTestFormat, qualityTestId, buildQualityTestMessage]);
 
   const handleAbortBatchTest = useCallback(() => {
     batchAbortRef.current = true;
@@ -1646,9 +1679,9 @@ function App() {
                 <input
                   type="number"
                   value={batchCount}
-                  onChange={(e) => setBatchCount(Math.max(1, Math.min(10000, Number(e.target.value))))}
+                  onChange={(e) => setBatchCount(Math.max(1, Math.min(65535, Number(e.target.value))))}
                   min={1}
-                  max={10000}
+                  max={65535}
                   disabled={batchRunning}
                   style={{ width: "100px" }}
                 />
@@ -1670,7 +1703,8 @@ function App() {
                 <select
                   value={batchPayloadSize}
                   onChange={(e) => setBatchPayloadSize(Number(e.target.value))}
-                  disabled={batchRunning}
+                  disabled={batchRunning || useQualityTestFormat}
+                  title={useQualityTestFormat ? "Fixed at 8 bytes when using Quality Test Protocol" : ""}
                 >
                   <option value={1}>3 bytes (seq + 1)</option>
                   <option value={2}>4 bytes (seq + 2)</option>
@@ -1689,6 +1723,38 @@ function App() {
                 <label htmlFor="batchExtended">Extended ID (29-bit)</label>
               </div>
             </div>
+
+            <div className="batch-form-grid" style={{ marginTop: "12px" }}>
+              <div className="checkbox-group">
+                <input
+                  type="checkbox"
+                  id="useQualityTestFormat"
+                  checked={useQualityTestFormat}
+                  onChange={(e) => setUseQualityTestFormat(e.target.checked)}
+                  disabled={batchRunning}
+                />
+                <label htmlFor="useQualityTestFormat">Use Quality Test Protocol</label>
+              </div>
+              {useQualityTestFormat && (
+                <div className="form-group">
+                  <label>Test ID (0-255)</label>
+                  <input
+                    type="number"
+                    value={qualityTestId}
+                    onChange={(e) => setQualityTestId(Math.max(0, Math.min(255, Number(e.target.value))))}
+                    min={0}
+                    max={255}
+                    disabled={batchRunning}
+                    style={{ width: "80px" }}
+                  />
+                </div>
+              )}
+            </div>
+            {useQualityTestFormat && (
+              <p className="batch-note" style={{ marginTop: "8px", fontSize: "12px", color: "#888" }}>
+                Quality Test Protocol uses 8-byte packets: Magic (0xCAFE) + Seq (2B) + Timestamp (2B) + TestID (1B) + Checksum (1B)
+              </p>
+            )}
 
             <div className="batch-actions">
               {!batchRunning ? (
